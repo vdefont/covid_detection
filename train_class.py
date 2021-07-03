@@ -100,7 +100,10 @@ def predict_and_save(learn: Learner, sname: str, model_name: str, is_neg: bool) 
     idx = 0 if sname == 'train' else 1
     preds, targs = learn.tta(idx)
 
-    save_dir = _get_save_dir(name=model_name + "_preds", is_neg=is_neg)
+    # When predicting train + valid on vastai, we want to append "_preds"
+    # But *not* when predicting test set on kaggle!
+    model_name_extn = "" if sname == 'test' else "_preds"
+    save_dir = _get_save_dir(name=(model_name + model_name_extn), is_neg=is_neg)
 
     df = pd.DataFrame(preds.numpy())
     dl = learn.dls.train if sname == 'train' else learn.dls.valid
