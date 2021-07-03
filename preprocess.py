@@ -88,7 +88,8 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
     for split in ['test'] if test_only else ['train']:
         save_dir = const.subdir_data_image(path=True) / f'{dst}/{split}'
 
-        save_dir.mkdir(exist_ok=False, parents=True)
+        # TODO put back
+        # save_dir.mkdir(exist_ok=False, parents=True)
         print("CREATED:", save_dir)
 
         num = 0
