@@ -85,7 +85,7 @@ def create_data_test_only(src: Path, dst: Path) -> None:
     for lab in const.VOCAB_SHORT:
         d = dst/'test'/lab
         if not d.exists():
-            d.mkdir()
+            d.mkdir(parents=True)
 
     for p in (src/'test').glob('*'):
         lab = random.choice(const.VOCAB_SHORT)
