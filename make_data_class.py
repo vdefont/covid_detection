@@ -82,12 +82,14 @@ def create_data(src: Path, extn: str, dst: Path, valid_amt: float) -> None:
 
 
 def create_data_test_only(src: Path, dst: Path) -> None:
-    shutil.copytree(src/'test', dst/'test'/'neg')
+    for p in (src/'test').glob('*'):
+        lab = random.choice(const.VOCAB_SHORT)
+        shutil.copy(p, dst/'test'/lab/p.name)
 
     # Also copy some images to "train"
     # This is required for our dataloader to work
     (dst/'train'/'neg').mkdir(parents=True)
-    for i, p in enumerate((dst/'test'/'neg').glob('*')):
+    for i, p in enumerate((src/'test').glob('*')):
         if i == 70:
             break
         shutil.copy(p, dst/'train'/'neg'/p.name)
