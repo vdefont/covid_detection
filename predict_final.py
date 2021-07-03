@@ -17,11 +17,12 @@ from make_data_detect import Frame, Box, scale_bbox_ls
 # SCALE BOXES UP TO ORIGINAL SIZE #
 
 
-def unscale_boxes(new_frame: Frame, boxes: Dict[str, List[Box]]) -> Dict[str, List[Box]]:
+def unscale_boxes(new_frame: Frame, boxes: Dict[str, List[Box]], sname: str) -> Dict[str, List[Box]]:
     """
     new_frame: The transformed frame that we used for predicting
     """
-    size_data = pd.read_csv(const.subdir_data_csv() + "id_orig_size.csv")
+    id_orig_size = "id_orig_size_test.csv" if sname == "test" else "id_orig_size.csv"
+    size_data = pd.read_csv(const.subdir_data_csv(path=True) / id_orig_size)
     id_to_frame = {id: Frame(W=w, H=h) for id, w, h in zip(size_data.id, size_data.width, size_data.height)}
     return {id: scale_bbox_ls(frame=new_frame, new_frame=id_to_frame[id], boxes=bs) for id, bs in boxes.items()}
 
@@ -44,7 +45,7 @@ def get_box_preds(preds_path_detect: Path, new_frame: Frame, sname: str = 'test'
         for id, boxes, scores in zip(preds, boxes_ls, scores_ls)
     }
 
-    return unscale_boxes(new_frame=new_frame, boxes=ret)
+    return unscale_boxes(new_frame=new_frame, boxes=ret, sname=sname)
 
 
 # FETCH const.VOCAB_LONG FROM OUTPUT FILE #
