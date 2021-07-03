@@ -78,8 +78,8 @@ def format_class_pred_str(class_idx, conf) -> str:
 
 def format_df(ids, vals, typ: str) -> DataFrame:
     # typ: study or image
-    df = DataFrame({'Id': ids, 'PredictionString': vals})
-    df.Id = df.Id + f"_{typ}"
+    df = DataFrame({'id': ids, 'PredictionString': vals})
+    df.id = df.id + f"_{typ}"
     return df
 
 
