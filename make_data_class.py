@@ -94,7 +94,6 @@ def create_data_test_only(src: Path, dst: Path) -> None:
 
     # Also copy some images to "train"
     # This is required for our dataloader to work
-    (dst/'train'/'neg').mkdir(parents=True)
     for i, p in enumerate((src/'test').glob('*')):
         if i == 70:
             break
