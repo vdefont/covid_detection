@@ -132,7 +132,9 @@ def create_box_data(frame_new: Frame, src_dir_str: str, dst_dir_str: str, test_o
     src_dir = const.subdir_data_class(path=True) / src_dir_str
     dst_dir = const.subdir_data_detect(path=True) / dst_dir_str
 
-    image_data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
+    image_data = None
+    if test_only is False:
+        image_data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
 
     # Make dirs
     dst_dir.mkdir()
