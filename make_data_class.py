@@ -83,9 +83,10 @@ def create_data(src: Path, extn: str, dst: Path, valid_amt: float) -> None:
 
 def create_data_test_only(src: Path, dst: Path) -> None:
     for lab in const.VOCAB_SHORT:
-        d = dst/'test'/lab
-        if not d.exists():
-            d.mkdir(parents=True)
+        for sname in ['train', 'test']:
+            d = dst/sname/lab
+            if not d.exists():
+                d.mkdir(parents=True)
 
     for p in (src/'test').glob('*'):
         lab = random.choice(const.VOCAB_SHORT)
@@ -97,7 +98,8 @@ def create_data_test_only(src: Path, dst: Path) -> None:
     for i, p in enumerate((src/'test').glob('*')):
         if i == 70:
             break
-        shutil.copy(p, dst/'train'/'neg'/p.name)
+        lab = random.choice(const.VOCAB_SHORT)
+        shutil.copy(p, dst/'train'/lab/p.name)
 
 
 def validate_created_data(extn: str, dst: Path, test_only: bool) -> None:
