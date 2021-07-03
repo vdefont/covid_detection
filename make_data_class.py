@@ -82,6 +82,11 @@ def create_data(src: Path, extn: str, dst: Path, valid_amt: float) -> None:
 
 
 def create_data_test_only(src: Path, dst: Path) -> None:
+    for lab in const.VOCAB_SHORT:
+        d = dst/'test'/lab
+        if not d.exists():
+            d.mkdir()
+
     for p in (src/'test').glob('*'):
         lab = random.choice(const.VOCAB_SHORT)
         shutil.copy(p, dst/'test'/lab/p.name)
