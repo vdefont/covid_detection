@@ -143,7 +143,11 @@ def _get_preds(model_type, model, infer_ds):
 
 def predict_and_save(box_dir: str, image_size: int, model_name: str, model, test_only: bool = False) -> Dict[str, Any]:
     model_type = model_name_to_type(model_name)
-    save_dir = const.subdir_preds_detect(path=True) / (model_name + "_preds")
+
+    # When predicting train + valid on vastai, we want to append "_preds"
+    # But *not* when predicting test set on kaggle!
+    model_name_extn = "" if test_only else "_preds"
+    save_dir = const.subdir_preds_detect(path=True) / (model_name + model_name_extn)
     if not save_dir.exists():
         save_dir.mkdir()
     snames = ['test'] if test_only else ['train', 'valid']
