@@ -90,25 +90,28 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
         save_dir.mkdir(exist_ok=False, parents=True)
         print("CREATED:", save_dir)
 
-        num = 0
         for dirname, _, filenames in tqdm(os.walk(const.DIR_ORIGINAL_DATA + split)):
             for file in filenames:
-                num += 1
-
                 make_image_args.append(
                     MakeImageArgs(dirname=dirname, file=file, extn=extn, size=size, save_dir=save_dir)
                 )
 
                 image_id.append(file[:-len('.dcm')])
                 splits.append(split)
+                break # TODO DELETE
+            break # TODO delete
 
     pool = Pool(processes=5)
     shapes = pool.map(make_image, make_image_args)
 
     meta_csv_out = const.subdir_data_csv(path=True) / ("meta_test.csv" if test_only else "meta.csv")
     if not meta_csv_out.exists():
+        print("MAKING ", meta_csv_out)
         if not meta_csv_out.parent.exists():
+            print("DOES NOT EXIST: Creating", meta_csv_out.parent)
             meta_csv_out.parent.mkdir()
+        else:
+            print("DOES EXIST!")
         dim0, dim1 = tuple(zip(*shapes))
         df = DataFrame.from_dict({'image_id': image_id, 'dim0': dim0, 'dim1': dim1, 'split': splits})
         df.to_csv(meta_csv_out, index=False)
