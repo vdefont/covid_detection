@@ -123,7 +123,7 @@ def get_learner(train_dl, valid_dl, model_name, load_model: bool = False):
     learn = model_type.fastai.learner(dls=[train_dl, valid_dl], model=model, metrics=[_get_metric()])
     learn.unfreeze()
     if load_model:
-        load_dir = const.subdir_models_detect()
+        load_dir = const.subdir_models_detect(path=True)
         learn.model.load_state_dict(torch.load(load_dir/model_name))
     return learn
 
