@@ -137,7 +137,7 @@ def create_box_data(frame_new: Frame, src_dir_str: str, dst_dir_str: str, test_o
         image_data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
 
     # Make dirs
-    dst_dir.mkdir()
+    dst_dir.mkdir(parents=True)
     for s in ['train', ('test' if test_only else 'valid')]:
         (dst_dir / s).mkdir()
         (dst_dir / s / 'annotations').mkdir()
