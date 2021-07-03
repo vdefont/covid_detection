@@ -68,9 +68,8 @@ def make_image(args: MakeImageArgs) -> Tuple[int]:
 
     # set keep_ratio=True to have original aspect ratio
     xray = read_xray(os.path.join(args.dirname, args.file))
-    # TODO put back
-    # im = resize(xray, size=args.size)
-    # im.save(args.save_dir/args.file.replace('dcm', args.extn))
+    im = resize(xray, size=args.size)
+    im.save(args.save_dir/args.file.replace('dcm', args.extn))
 
     return xray.shape
 
@@ -88,8 +87,7 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
     for split in ['test'] if test_only else ['train']:
         save_dir = const.subdir_data_image(path=True) / f'{dst}/{split}'
 
-        # TODO put back
-        # save_dir.mkdir(exist_ok=False, parents=True)
+        save_dir.mkdir(exist_ok=False, parents=True)
         print("CREATED:", save_dir)
 
         num = 0
