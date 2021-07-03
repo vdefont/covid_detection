@@ -105,8 +105,10 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
     pool = Pool(processes=5)
     shapes = pool.map(make_image, make_image_args)
 
-    meta_csv_out = const.DIR_WORKING + const.SUBDIR_DATA_CSV + ("meta_test.csv" if test_only else "meta.csv")
-    if not Path(meta_csv_out).exists():
+    meta_csv_out = const.subdir_data_csv(path=True) / ("meta_test.csv" if test_only else "meta.csv")
+    if not meta_csv_out.exists():
+        if not meta_csv_out.parent.exists():
+            meta_csv_out.parent.mkdir()
         dim0, dim1 = tuple(zip(*shapes))
         df = DataFrame.from_dict({'image_id': image_id, 'dim0': dim0, 'dim1': dim1, 'split': splits})
         df.to_csv(meta_csv_out, index=False)
