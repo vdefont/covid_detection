@@ -7,6 +7,7 @@ from sklearn.model_selection import train_test_split
 import random
 from collections import defaultdict
 import numpy as np
+import itertools
 
 import const
 
@@ -82,23 +83,18 @@ def create_data(src: Path, extn: str, dst: Path, valid_amt: float) -> None:
 
 
 def create_data_test_only(src: Path, dst: Path) -> None:
-    for lab in const.VOCAB_SHORT:
-        for sname in ['train', 'test']:
-            d = dst/sname/lab
-            if not d.exists():
-                d.mkdir(parents=True)
+    for lab, sname in itertools.product(const.VOCAB_SHORT, ['train', 'test']):
+        d = dst/sname/lab
+        if not d.exists():
+            d.mkdir(parents=True)
 
-    for p in (src/'test').glob('*'):
-        lab = random.choice(const.VOCAB_SHORT)
+    vocab_cycle = itertools.cycle(const.VOCAB_SHORT)
+    for i, (p, lab) in enumerate(zip((src/'test').glob('*'), vocab_cycle)):
         shutil.copy(p, dst/'test'/lab/p.name)
-
-    # Also copy some images to "train"
-    # This is required for our dataloader to work
-    for i, p in enumerate((src/'test').glob('*')):
-        if i == 70:
-            break
-        lab = random.choice(const.VOCAB_SHORT)
-        shutil.copy(p, dst/'train'/lab/p.name)
+        # Also copy some images to "train"
+        # This is required for our dataloader to work
+        if i < 70:
+            shutil.copy(p, dst / 'train' / lab / p.name)
 
 
 def validate_created_data(extn: str, dst: Path, test_only: bool) -> None:
