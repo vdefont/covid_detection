@@ -101,8 +101,6 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
 
                 image_id.append(file[:-len('.dcm')])
                 splits.append(split)
-                break
-            break
 
     pool = Pool(processes=5)
     shapes = pool.map(make_image, make_image_args)
