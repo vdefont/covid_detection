@@ -68,8 +68,9 @@ def make_image(args: MakeImageArgs) -> Tuple[int]:
 
     # set keep_ratio=True to have original aspect ratio
     xray = read_xray(os.path.join(args.dirname, args.file))
-    im = resize(xray, size=args.size)
-    im.save(args.save_dir/args.file.replace('dcm', args.extn))
+    # TODO put back
+    # im = resize(xray, size=args.size)
+    # im.save(args.save_dir/args.file.replace('dcm', args.extn))
 
     return xray.shape
 
