@@ -48,6 +48,7 @@ def modify_tfms(tfms):
 
 
 def get_ds_train(box_dir, image_size):
+    box_dir = const.subdir_data_detect() + box_dir
     train_tfms = tfms.A.Adapter([
         *modify_tfms(tfms.A.aug_tfms(size=image_size, presize=int(image_size*1.5))),
         tfms.A.Normalize()
@@ -57,6 +58,7 @@ def get_ds_train(box_dir, image_size):
 
 
 def get_ds_valid(box_dir, image_size, sname='valid'):
+    box_dir = const.subdir_data_detect() + box_dir
     valid_tfms = tfms.A.Adapter([
         *tfms.A.resize_and_pad(image_size), tfms.A.Normalize()
     ])
@@ -65,7 +67,6 @@ def get_ds_valid(box_dir, image_size, sname='valid'):
 
 
 def get_ds_train_valid(box_dir, image_size):
-    box_dir = const.subdir_data_detect() + box_dir
     train_ds = get_ds_train(box_dir=box_dir, image_size=image_size)
     valid_ds = get_ds_valid(box_dir=box_dir, image_size=image_size)
     return train_ds, valid_ds
@@ -142,7 +143,6 @@ def _get_preds(model_type, model, infer_ds):
 
 def predict_and_save(box_dir: str, image_size: int, model_name: str, model, test_only: bool = False) -> Dict[str, Any]:
     model_type = model_name_to_type(model_name)
-    box_dir = const.subdir_data_detect() + box_dir
     save_dir = const.subdir_preds_detect(path=True) / (model_name + "_preds")
     if not save_dir.exists():
         save_dir.mkdir()
