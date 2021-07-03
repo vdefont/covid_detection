@@ -76,8 +76,11 @@ def format_class_pred_str(class_idx, conf) -> str:
     return f"{const.VOCAB_LONG[class_idx]} {conf} 0 0 1 1"
 
 
-def format_df(ids, vals) -> DataFrame:
-    return DataFrame({'Id': ids, 'PredictionString': vals})
+def format_df(ids, vals, typ: str) -> DataFrame:
+    # typ: study or image
+    df = DataFrame({'Id': ids, 'PredictionString': vals})
+    df.Id = df.Id + f"_{typ}"
+    return df
 
 
 def format_box(box: Box) -> str:
@@ -98,8 +101,8 @@ def make_study_predictions_hard(class_preds: DataFrame) -> DataFrame:
     preds = data.to_numpy().argmax(1)
     preds_str = [format_class_pred_str(idx, 1.0) for idx in preds]
 
-    id_str = data.reset_index().study_id + "_study"
-    return format_df(id_str, preds_str)
+    id_str = data.reset_index().study_id
+    return format_df(id_str, preds_str, typ="study")
 
 
 def make_study_predictions_soft(class_preds: DataFrame) -> DataFrame:
@@ -110,8 +113,8 @@ def make_study_predictions_soft(class_preds: DataFrame) -> DataFrame:
     ]
     preds_str = list(map(' '.join, zip(*preds_ls)))
 
-    id_str = data.reset_index().study_id + "_study"
-    return format_df(id_str, preds_str)
+    id_str = data.reset_index().study_id
+    return format_df(id_str, preds_str, typ="study")
 
 
 def make_image_predictions_thresh(thresh, class_preds: DataFrame, box_preds: Dict[str, List[Box]]) -> DataFrame:
@@ -122,7 +125,7 @@ def make_image_predictions_thresh(thresh, class_preds: DataFrame, box_preds: Dic
             id_to_str[id] = format_none(1)
         else:
             id_to_str[id] = ' '.join(map(format_box, box_preds[id]))
-    return format_df(ids=list(id_to_str.keys()), vals=list(id_to_str.values()))
+    return format_df(ids=list(id_to_str.keys()), vals=list(id_to_str.values()), typ="image")
 
 
 def _scale_box_confidences(boxes: List[Box], factor: float) -> List[Box]:
@@ -143,7 +146,7 @@ def make_image_predictions_combined(none_conf_base: float, class_preds: DataFram
 
         id_to_str[id] = ' '.join([none_str] + boxes_str)
 
-    return format_df(ids=list(id_to_str.keys()), vals=list(id_to_str.values()))
+    return format_df(ids=list(id_to_str.keys()), vals=list(id_to_str.values()), typ="image")
 
 
 STUDY_PRED_HARD = make_study_predictions_hard
