@@ -47,14 +47,38 @@ def _get_model(arch: Callable, is_neg: bool, head_dropout: float = 0.) -> nn.Mod
     return nn.Sequential(body, head)
 
 
-MODELS: Dict[str, nn.Module] = {
-    "resnet18": _get_model(resnet18, is_neg=False, head_dropout=0.),
-}
+def _get_model_path(model_name: str, is_neg: bool) -> Path:
+    base = const.dir_base_models(path=True)
+    extn = "neg" if is_neg else "class"
+    return base / extn / model_name
 
 
-MODELS_NEG: Dict[str, nn.Module] = {
-    "resnet18": _get_model(resnet18, is_neg=True, head_dropout=0.),
-}
+def _save_model(model_name: str, is_neg: bool, model: nn.Module) -> None:
+    path = _get_model_path(model_name=model_name, is_neg=is_neg)
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True)
+    with open(path, 'wb') as f:
+        pickle.dump(model, f)
+
+
+def _load_model(model_name: str, is_neg: bool) -> nn.Module:
+    path = _get_model_path(model_name=model_name, is_neg=is_neg)
+    with open(path, 'rb') as f:
+        return pickle.load(f)
+
+
+def make_base_models():
+    models_class = {
+        "resnet18": _get_model(resnet18, is_neg=False, head_dropout=0.),
+    }
+    for name, model in models_class.items():
+        _save_model(model_name=name, is_neg=False, model=model)
+
+    models_neg = {
+        "resnet18": _get_model(resnet18, is_neg=True, head_dropout=0.),
+    }
+    for name, model in models_neg.items():
+        _save_model(model_name=name, is_neg=True, model=model)
 
 
 # LEARN #
@@ -64,8 +88,7 @@ def get_learn(
         dls: DataLoaders, model_name: str, is_neg: bool, load_model: bool = False
 ) -> Learner:
     # Include "name" to load pre-trained weights
-    model_dict = MODELS_NEG if is_neg else MODELS
-    model = model_dict[model_name]
+    model = _load_model(model_name=model_name, is_neg=is_neg)
     learn = Learner(
         dls=dls,
         model=model,

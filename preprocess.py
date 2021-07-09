@@ -41,14 +41,50 @@ def read_xray(path, voi_lut=True, fix_monochrome=True):
     return data
 
 
-def resize(array, size, keep_ratio=False, resample=Image.LANCZOS):
-    # Original from: https://www.kaggle.com/xhlulu/vinbigdata-process-and-resize-to-image
+def see_big_ratios() -> DataFrame:
+    meta = pd.read_csv("data_csv/meta.csv")
+    meta['r01'] = meta.dim0 / meta.dim1
+    meta['r10'] = meta.dim1 / meta.dim0
+    meta[['r01', 'r10']].max(axis=1)
+    meta['r'] = meta[['r01', 'r10']].max(axis=1)
+    meta = meta.sort_values(by='r', ascending=False)
+    # meta.r.plot.hist(bins=20)
+    # - Clearly shows that we should be resizing better!
+    return meta
+
+
+def show_dcm(name: str) -> None:
+    """
+    For exploratory purposes. Check out:
+    - a5c5e8425f03
+    """
+    for p in Path("data_original/train").glob('**/*dcm'):
+        if p.name.replace(".dcm", "") == name:
+            im = read_xray(p)
+            break
+    img = Image.fromarray(im)
+    img.show()
+
+
+def _make_square(im: np.array) -> np.ndarray:
+    """
+    Pads the left/right or top/bottom of the image with black, so that
+    it is a square
+    """
+    dim = max(im.shape)
+    ret = np.zeros((dim, dim)).astype(np.uint8)
+    y_start = (dim - im.shape[0]) // 2
+    x_start = (dim - im.shape[1]) // 2
+    ret[y_start: y_start + im.shape[0], x_start: x_start + im.shape[1]] = im
+    return ret
+
+
+def resize(array, size, resample=Image.LANCZOS):
+    # Forked from: https://www.kaggle.com/xhlulu/vinbigdata-process-and-resize-to-image
+    array = _make_square(array)  # Ensures that resizing preserves the dimensions
     im = Image.fromarray(array)
 
-    if keep_ratio:
-        im.thumbnail((size, size), resample)
-    else:
-        im = im.resize((size, size), resample)
+    im = im.resize((size, size), resample)
 
     return im
 

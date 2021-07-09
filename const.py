@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Union
 
 
+DIR_BASE_MODELS = "./base_models/"
 DIR_ORIGINAL_DATA = "./data_original/"
 DIR_WORKING = "./"
 # Subdirs of working dir
@@ -16,15 +17,22 @@ SUBDIR_PREDS_NEG = "preds_neg/"
 SUBDIR_MODELS_DETECT = "models_detect/"
 SUBDIR_PREDS_DETECT = "preds_detect/"
 SUBDIR_PREDS_FINAL = "preds_final/"
+SUBDIR_MODELS_KAGGLE = "models_kaggle/"
 
 VOCAB_SHORT = ["neg", "typ", "ind", "atyp"]
 VOCAB_SHORT_TO_LONG = {
     'neg': 'negative',
     'typ': 'typical',
     'ind': 'indeterminate',
-    'atyp': 'atyp',
+    'atyp': 'atypical',
 }
 VOCAB_LONG = [VOCAB_SHORT_TO_LONG[v] for v in VOCAB_SHORT]
+VOCAB_FULL = [
+    "Negative for Pneumonia",
+    "Typical Appearance",
+    "Indeterminate Appearance",
+    "Atypical Appearance",
+]
 
 SNAMES = ["train", "valid", "test"]
 
@@ -34,6 +42,11 @@ def maybe_path(dir_func):
         ret = dir_func()
         return Path(ret) if path else ret
     return f
+
+
+@maybe_path
+def dir_base_models():
+    return DIR_BASE_MODELS
 
 
 @maybe_path
@@ -99,3 +112,8 @@ def subdir_preds_detect():
 @maybe_path
 def subdir_preds_final():
     return DIR_WORKING + SUBDIR_PREDS_FINAL
+
+
+@maybe_path
+def subdir_models_kaggle():
+    return DIR_WORKING + SUBDIR_MODELS_KAGGLE

@@ -11,41 +11,8 @@ from pathlib import Path
 
 import const
 import preprocess
-from make_data_detect import Frame, Box, scale_bbox_ls
-
-
-# SCALE BOXES UP TO ORIGINAL SIZE #
-
-
-def unscale_boxes(new_frame: Frame, boxes: Dict[str, List[Box]], sname: str) -> Dict[str, List[Box]]:
-    """
-    new_frame: The transformed frame that we used for predicting
-    """
-    id_orig_size = "id_orig_size_test.csv" if sname == "test" else "id_orig_size.csv"
-    size_data = pd.read_csv(const.subdir_data_csv(path=True) / id_orig_size)
-    id_to_frame = {id: Frame(W=w, H=h) for id, w, h in zip(size_data.id, size_data.width, size_data.height)}
-    return {id: scale_bbox_ls(frame=new_frame, new_frame=id_to_frame[id], boxes=bs) for id, bs in boxes.items()}
-
-
-# FETCH BOXES FROM OUTPUT FILE #
-
-
-def get_box_preds(preds_path_detect: Path, new_frame: Frame, sname: str = 'test') -> Dict[str, List[Box]]:
-    """
-    Returns: id -> boxes
-    """
-
-    with open(preds_path_detect/sname, 'rb') as f:
-        preds = pickle.load(f)
-
-    boxes_ls = [p['bboxes'] for p in preds.values()]
-    scores_ls = [p['scores'] for p in preds.values()]
-    ret = {
-        id: [Box(X=box.xmin, Y=box.ymin, W=box.width, H=box.height, C=score) for box, score in zip(boxes, scores)]
-        for id, boxes, scores in zip(preds, boxes_ls, scores_ls)
-    }
-
-    return unscale_boxes(new_frame=new_frame, boxes=ret, sname=sname)
+from make_data_detect import Frame, Box
+from train_detect import get_box_preds
 
 
 # FETCH const.VOCAB_LONG FROM OUTPUT FILE #
@@ -55,18 +22,20 @@ def get_class_preds(preds_path_class: Path, preds_path_neg: Path, sname: str = '
     ret = pd.read_csv(preds_path_class/f"{sname}.csv", index_col=0)
     ret.columns = ret.columns.map(const.VOCAB_SHORT_TO_LONG)
     neg_df = pd.read_csv(preds_path_neg/f"{sname}.csv", index_col=0)
-    ret['positive'] = neg_df.positive
+    ret['2_class_positive'] = neg_df.positive
+    ret['4_class_positive'] = 1 - ret.negative
 
     ret = ret.reset_index().rename(columns={'index': 'image_id'})
 
     img_to_study = preprocess.make_img_to_study_map(test_only=(sname == 'test'))
     ret['study_id'] = ret.image_id.map(img_to_study)
 
-    study_positive = ret.groupby('study_id').positive.mean().reset_index().rename(
-        columns={'positive': 'study_positive'})
+    study_positive = ret.groupby('study_id')[['2_class_positive', '4_class_positive']].mean().reset_index().rename(
+        columns={'2_class_positive': '2_class_positive_study', '4_class_positive': '4_class_positive_study'}
+    )
     ret = ret.merge(study_positive, on='study_id')
 
-    return ret[['image_id', 'study_id', 'positive', 'study_positive'] + const.VOCAB_LONG]
+    return ret[['image_id', 'study_id', '2_class_positive_study', '4_class_positive_study'] + const.VOCAB_LONG]
 
 
 # MAKE PREDICTIONS (unformatted) #
@@ -133,11 +102,16 @@ def _scale_box_confidences(boxes: List[Box], factor: float) -> List[Box]:
     return [Box(X=b.X, Y=b.Y, W=b.W, H=b.H, C=b.C * factor) for b in boxes]
 
 
-def make_image_predictions_combined(none_conf_base: float, class_preds: DataFrame, box_preds: Dict[str, List[Box]]) -> DataFrame:
+def make_image_predictions_combined(
+        none_conf_base: float, class_positive_2_to_4: float, class_preds: DataFrame, box_preds: Dict[str, List[Box]],
+) -> DataFrame:
+    """
+    class_positive_2_to_4: 0 = 2-class, 1 = 4-class, 0.5 = mean
+    """
     id_to_str = {}
     for _i, row in class_preds.iterrows():
         id = row.image_id
-        conf_pos = row.study_positive
+        conf_pos = row['2_class_positive_study'] * (1 - class_positive_2_to_4) + row['4_class_positive_study'] * class_positive_2_to_4
         conf_neg = 1.0 - conf_pos
 
         none_str = format_none(conf=none_conf_base * conf_neg)
@@ -153,7 +127,9 @@ STUDY_PRED_HARD = make_study_predictions_hard
 STUDY_PRED_SOFT = make_study_predictions_soft
 
 IMAGE_PRED_THRESH = partial(make_image_predictions_thresh, thresh=0.5)
-IMAGE_PRED_COMBINED = partial(make_image_predictions_combined, none_conf_base=1.0)
+IMAGE_PRED_COMBINED_2 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=0.)
+IMAGE_PRED_COMBINED_2_4 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=0.5)
+IMAGE_PRED_COMBINED_4 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=1.)
 
 
 def make_predictions(
@@ -175,7 +151,9 @@ def make_predictions(
     out_file = const.subdir_preds_final(path=True) / "__".join(out_name_parts)
 
     class_preds = get_class_preds(preds_path_class=preds_path_class, preds_path_neg=preds_path_neg, sname=sname)
-    box_preds = get_box_preds(preds_path_detect=preds_path_detect, new_frame=Frame(224,224), sname=sname)
+    # Make sure that the frame here is whatever size is used by EfficientDet! That is the size at which it makes
+    # its predictions
+    box_preds = get_box_preds(preds_path_detect=preds_path_detect, new_frame=Frame(256, 256), sname=sname)
 
     study_preds = study_pred_func(class_preds=class_preds)
     image_preds = image_pred_func(class_preds=class_preds, box_preds=box_preds)
@@ -190,6 +168,6 @@ def test():
         model_name_neg="resnet18",
         model_name_detect="eff_lite0_256",
         study_pred_func=STUDY_PRED_SOFT,
-        image_pred_func=IMAGE_PRED_THRESH,
+        image_pred_func=IMAGE_PRED_COMBINED_2_4,
         sname='valid',
     )

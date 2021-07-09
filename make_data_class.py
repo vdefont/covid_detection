@@ -128,4 +128,35 @@ def create_and_validate_data(
     validate_created_data(extn=extn or 'png', dst=dst_path, test_only=test_only)
 
 
+def create_and_validate_data_mf(src: str, test_only: bool = False) -> None:
+    """
+    Given an input directory "png224", makes two new directories titled
+    "png224_m" and "png224_f"
+    """
+    src_path = const.subdir_data_class(path=True) / src
+
+    # Get male/female info
+    meta = pd.read_csv(const.subdir_data_csv() + "metadata_feats_train.csv")
+    males = set(meta.image_id[meta.PatientSex_M == 1])
+
+    # Set up dirs
+    dir_m = Path(str(src_path) + "_m")
+    dir_f = Path(str(src_path) + "_f")
+    snames = ['train', 'test'] if test_only else ['train', 'valid']
+    for dir_base, sname, label in itertools.product([dir_m, dir_f], snames, const.VOCAB_SHORT):
+        (dir_base/sname/label).mkdir(parents=True)
+
+    # Copy over files
+    for p in src_path.glob('**/*png'):
+        img_id = p.name.replace(".png", "")
+        dir_dst = dir_m if img_id in males else dir_f
+        dst = dir_dst / p.parent.parent.name / p.parent.name / p.name
+        shutil.copy(p, dst)
+
+    print("MALES:\n")
+    validate_created_data(extn="png", dst=dir_m, test_only=test_only)
+    print("FEMALES:\n")
+    validate_created_data(extn="png", dst=dir_f, test_only=test_only)
+
+
 # create_and_validate_data(src="png224", extn="png", dst="png224", valid_amt=0.3)
