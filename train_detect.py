@@ -31,34 +31,11 @@ def make_records(box_dir: str, sname: str):
     return records
 
 
-def maybe_modify_tfm(tfm):
-    """
-    Change or remove transforms we don't want
-    """
-    name = type(tfm).__name__
-    if name == 'ShiftScaleRotate':
-        tfm.rotate_limit = (-3, 3)
-    elif name in ['RGBShift', 'Blur']:
-        tfm = None
-    #     elif name == 'OneOrOther':
-    #         # This is some aggressive cropping. Keep it for now!
-    #         tfm = None
-    return tfm
-
-
-def modify_tfms(tfms_):
-    """
-    Change or remove transforms we don't want
-    """
-    tfms_ = [maybe_modify_tfm(tfm=t) for t in tfms_]
-    return [t for t in tfms_ if t is not None]
-
-
 def get_ds_train(box_dir, image_size):
     box_dir = const.subdir_data_detect() + box_dir
     train_tfms = tfms.A.Adapter([
-        *modify_tfms(tfms.A.aug_tfms(size=image_size, presize=int(image_size*1.5))),
-        tfms.A.Normalize()
+        tfms.A.Resize(image_size, image_size),
+        tfms.A.Normalize(),
     ])
     records = make_records(box_dir=box_dir, sname='train')
     return Dataset(records, train_tfms)
@@ -322,6 +299,11 @@ def get_learner(train_dl, valid_dl, model_name, load_model: bool = False):
     if load_model:
         load_dir = const.subdir_models_detect(path=True)
         learn.model.load_state_dict(torch.load(load_dir/model_name))
+
+    config = dict(learn.model.config)
+    config['act_type'] = 'silu'
+    model.config = config
+
     return learn
 
 

@@ -1,4 +1,5 @@
 from fastai.vision.all import *
+import albumentations
 import pickle
 import torch
 from torch import Tensor
@@ -15,14 +16,33 @@ def get_y_neg(path: Path) -> str:
     return 'negative' if path.parent.name == 'neg' else 'positive'
 
 
-def get_dls(image_path: str, is_neg: bool, test_only: bool = False) -> DataLoaders:
+class AlbumentationsTransform(Transform):
+    split_idx = 0
+    def __init__(self, aug): self.aug = aug
+    def encodes(self, img: PILImage):
+        aug_img = self.aug(image=np.array(img))['image']
+        return PILImage.create(aug_img)
+
+
+def get_train_aug(img_size: int):
+    # TUNED (cutout, and tried all others)
+    cutout_size = int(img_size * 0.3)
+    return albumentations.Compose([
+        albumentations.Cutout(num_holes=1, max_h_size=cutout_size, max_w_size=cutout_size, p=0.7),
+    ])
+
+
+def get_dls(image_path: str, img_size: int, is_neg: bool, presize_amt: float = 2, test_only: bool = False) -> DataLoaders:
     data_block = DataBlock(
         get_items=get_image_files,
         get_y=get_y_neg if is_neg else parent_label,
         blocks=(ImageBlock, CategoryBlock),
         splitter=GrandparentSplitter(valid_name=('test' if test_only else 'valid')),
+        item_tfms = [Resize(img_size * presize_amt), AlbumentationsTransform(get_train_aug(img_size=img_size))],
         batch_tfms=[
-            *aug_transforms(max_rotate=3, max_warp=0.),
+            Brightness(max_lighting=0.05, p=0.75),
+            Contrast(max_lighting=0.2, p=0.75),
+            *aug_transforms(size=img_size, max_rotate=3, max_warp=0, max_lighting=0, max_zoom=1.0),
             Normalize(),
         ]
     )
@@ -93,7 +113,7 @@ def get_learn(
         dls=dls,
         model=model,
         loss_func=CrossEntropyLossFlat(),
-        metrics=accuracy,
+        # metrics=accuracy,
     )
     learn.unfreeze()
     if load_model:
@@ -119,9 +139,13 @@ def _get_save_dir(name: str, is_neg: bool) -> Path:
     return ret / name
 
 
-def predict_and_save(learn: Learner, sname: str, model_name: str, is_neg: bool) -> Tuple[Tensor, Tensor]:
+def predict_and_save(learn: Learner, sname: str, model_name: str, n_tta: int, is_neg: bool) -> Tuple[Tensor, Tensor]:
     idx = 0 if sname == 'train' else 1
-    preds, targs = learn.tta(idx)
+
+    if n_tta > 0:
+        preds, targs = learn.tta(idx, n=n_tta)
+    else:
+        preds, targs = learn.get_preds(ds_idx=idx)
 
     # When predicting train + valid on vastai, we want to append "_preds"
     # But *not* when predicting test set on kaggle!
@@ -155,21 +179,18 @@ def confusion_matrix(learn: Learner) -> None:
     interp.plot_confusion_matrix()
 
 
-# RRELU: Doesn't really help #
+# SiLU: TODO see if this helps #
 
 
-def use_rrelu_rec(parent, idx, component):
+def use_silu_rec(parent, idx, component):
     if isinstance(component, Iterable):
         for i, c in enumerate(component):
-            use_rrelu_rec(component, i, c)
+            use_silu_rec(component, i, c)
     elif isinstance(component, torch.nn.ReLU):
-        parent[idx] = torch.nn.RReLU()
-    else:
-        try:
-            component.relu = torch.nn.RReLU()
-        except:
-            pass
+        parent[idx] = torch.nn.SiLU()
+    elif hasattr(component, 'relu'):
+        component.relu = torch.nn.SiLU()
 
-def use_rrelu(component):
+def use_silu(component):
     for i, c in enumerate(component):
-        use_rrelu_rec(component, i, c)
+        use_silu_rec(component, i, c)

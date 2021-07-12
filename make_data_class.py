@@ -30,6 +30,31 @@ def setup_data() -> DataFrame:
     return data
 
 
+def get_folds(data: DataFrame, num_folds: int) -> List[Set[str]]:
+    """
+    Strategy:
+    - Group images by study_id, and bucket these groups by label
+        (so we have four buckets, each containing many groups)
+    - Split up the groups so that the five folds have about an
+     equal number of individual samples
+    """
+    random.seed(42)
+    lab_to_gps = defaultdict(list)
+    for name, group in data.groupby(['label', 'study_id']):
+        lab_to_gps[name[0]].append(group)
+
+    fold_gps = [[] for _ in range(num_folds)]
+    for gps in lab_to_gps.values():
+        random.shuffle(gps)
+        cumsum = np.cumsum([len(gp) for gp in gps])
+        cum_frac = cumsum / cumsum[-1] - 0.000001 # So the last one is not in next bucket
+        fold_i_ls = (cum_frac * num_folds).astype(int)
+        for fold_i, gp in zip(fold_i_ls, gps):
+            fold_gps[fold_i].append(gp)
+
+    return [set(pd.concat(gps).img_id) for gps in fold_gps]
+
+
 def get_tr_vl(data: DataFrame, valid_amt: float) -> Tuple[Set[str], Set[str]]:
     """
     Strategy:

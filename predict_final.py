@@ -3,7 +3,7 @@ from pandas import DataFrame
 import numpy as np
 import pickle
 from icevision.all import *
-from typing import List, Dict, Callable, Optional
+from typing import List, Dict, Callable, Optional, Tuple
 import torch
 from copy import deepcopy
 from functools import partial
@@ -103,7 +103,10 @@ def _scale_box_confidences(boxes: List[Box], factor: float) -> List[Box]:
 
 
 def make_image_predictions_combined(
-        none_conf_base: float, class_positive_2_to_4: float, class_preds: DataFrame, box_preds: Dict[str, List[Box]],
+        none_conf_base: float,
+        class_positive_2_to_4: Tuple[float, bool],  # (amt, geom_mean)
+        class_preds: DataFrame,
+        box_preds: Dict[str, List[Box]],
 ) -> DataFrame:
     """
     class_positive_2_to_4: 0 = 2-class, 1 = 4-class, 0.5 = mean
@@ -111,7 +114,13 @@ def make_image_predictions_combined(
     id_to_str = {}
     for _i, row in class_preds.iterrows():
         id = row.image_id
-        conf_pos = row['2_class_positive_study'] * (1 - class_positive_2_to_4) + row['4_class_positive_study'] * class_positive_2_to_4
+        ratio_2_to_4, geom_mean = class_positive_2_to_4
+        amt_2 = (1 - ratio_2_to_4)
+        amt_4 = ratio_2_to_4
+        if geom_mean:
+            conf_pos = (row['2_class_positive_study'] ** amt_2) * (row['4_class_positive_study'] ** amt_4)
+        else:
+            conf_pos = row['2_class_positive_study'] * amt_2 + row['4_class_positive_study'] * amt_4
         conf_neg = 1.0 - conf_pos
 
         none_str = format_none(conf=none_conf_base * conf_neg)
@@ -127,9 +136,11 @@ STUDY_PRED_HARD = make_study_predictions_hard
 STUDY_PRED_SOFT = make_study_predictions_soft
 
 IMAGE_PRED_THRESH = partial(make_image_predictions_thresh, thresh=0.5)
-IMAGE_PRED_COMBINED_2 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=0.)
-IMAGE_PRED_COMBINED_2_4 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=0.5)
-IMAGE_PRED_COMBINED_4 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=1.)
+IMAGE_PRED_COMBINED_2 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=(0., False))
+IMAGE_PRED_COMBINED_2_GEOM = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=(0., True))
+IMAGE_PRED_COMBINED_2_4 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=(0.5, False))
+IMAGE_PRED_COMBINED_2_4_GEOM = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=(0.5, True))
+IMAGE_PRED_COMBINED_4 = partial(make_image_predictions_combined, none_conf_base=1.0, class_positive_2_to_4=(1., False))
 
 
 def make_predictions(
