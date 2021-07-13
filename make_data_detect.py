@@ -331,7 +331,7 @@ def make_xml(path: Path, boxes: Iterable[Box], frame_new: Frame) -> str:
     return make_annotation_xml(path=path, objects=objects, frame_new=frame_new)
 
 
-def create_box_data(frame_new: Frame, src_dir_str: str, dst_dir_str: str, test_only: bool = False) -> None:
+def create_box_data(frame_new: Frame, src_dir_str: str, dst_dir_str: str, extn: str, test_only: bool = False) -> None:
     """
     Create XML annotations for all rows in image data. Also copy the corresponding
     images from src_dir to dst_dir, to fit the expected folder structure
@@ -355,8 +355,8 @@ def create_box_data(frame_new: Frame, src_dir_str: str, dst_dir_str: str, test_o
 
     for s in ['test'] if test_only else ['train', 'valid']:
         id_boxes = {}
-        for path in (src_dir/s).glob('**/*png'):
-            id = path.name.replace(".png", "")
+        for path in (src_dir/s).glob(f'**/*{extn}'):
+            id = path.name.replace(f".{extn}", "")
             new_path = dst_dir/s/'images'/path.name
 
             if s == 'test':
@@ -384,7 +384,7 @@ def create_box_data(frame_new: Frame, src_dir_str: str, dst_dir_str: str, test_o
             if i == 70:
                 break
             shutil.copy(p, dst_dir/'train'/'images'/p.name)
-            xml_name = p.name.replace('.png', '.xml')
+            xml_name = p.name.replace(f'.{extn}', '.xml')
             shutil.copy(dst_dir/'test'/'annotations'/xml_name, dst_dir/'train'/'annotations'/xml_name)
 
 
@@ -393,5 +393,6 @@ def make_boxes_png_224(test_only: bool = False):
         frame_new=Frame(W=224, H=224),
         src_dir_str="png224_test" if test_only else "png224",
         dst_dir_str="png224_test" if test_only else "png224",
+        extn='png',
         test_only=test_only,
     )

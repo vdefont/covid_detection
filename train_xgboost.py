@@ -8,8 +8,10 @@ from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC, SVC
+import matplotlib.pyplot as plt
 
 import const
+import make_data_class
 
 
 class TrainValid(NamedTuple):
@@ -19,30 +21,31 @@ class TrainValid(NamedTuple):
     y_valid: DataFrame
 
 
-def tv(is_neg: bool) -> TrainValid:
+def get_train_valid(is_neg: bool) -> TrainValid:
     # Add NN feats
 
-    preds_class_train = pd.read_csv(const.subdir_preds_class(path=True)/'resnet18'/'train.csv', index_col=0)
-    preds_class_valid = pd.read_csv(const.subdir_preds_class(path=True)/'resnet18'/'valid.csv', index_col=0)
-    preds_neg_train = pd.read_csv(const.subdir_preds_neg(path=True)/'resnet18'/'train.csv', index_col=0)
-    preds_neg_valid = pd.read_csv(const.subdir_preds_neg(path=True)/'resnet18'/'valid.csv', index_col=0)
+    preds_class = pd.read_csv(const.subdir_preds_class(path=True)/'resnet18'/'valid.csv', index_col=0)
+    preds_class = preds_class.rename(columns=lambda c: f"class_{c}")
 
-    preds_train = pd.concat([preds_class_train, preds_neg_train], axis=1)
-    preds_valid = pd.concat([preds_class_valid, preds_neg_valid], axis=1)
+    preds_neg = pd.read_csv(const.subdir_preds_neg(path=True)/'resnet18'/'valid.csv', index_col=0)
+    preds_neg = preds_neg[['0']]  # The second columns is redundant since they sum to 1
+    preds_neg = preds_neg.rename(columns=lambda c: f"neg_{c}")
+
+    preds = pd.concat([preds_class, preds_neg], axis=1)
 
     # Add meta feats
 
     meta = pd.read_csv(const.subdir_data_csv() + "metadata_feats_train.csv")
+    X = preds.merge(meta, left_index=True, right_on="image_id")
+    X = X.set_index("image_id")
 
-    X_train = preds_train.merge(meta, left_index=True, right_on="image_id")
-    X_valid = preds_valid.merge(meta, left_index=True, right_on="image_id")
-    del X_train["image_id"]
-    del X_valid["image_id"]
-    X_train = X_train.set_index("study_id")
-    X_valid = X_valid.set_index("study_id")
-
-    feats_to_remove = []
-    for feat, X in itertools.product(feats_to_remove, [X_train, X_valid]):
+    # Unused by xgb
+    feats_to_remove = [
+        'image_type_DERIVED', 'image_type_100000', 'PhotometricInterpretation_MONOCHROME2', 'part_pecho',
+        'Modality_CR', 'InstanceNumber_3+', 'PatientSex_F', 'image_type_POST_PROCESSED',
+        'SpecificCharacterSet_ISO_IR 192',
+    ]
+    for feat in feats_to_remove:
         assert feat in X, f"{feat} not found"
         del X[feat]
 
@@ -57,14 +60,20 @@ def tv(is_neg: bool) -> TrainValid:
 
     labels = labels[["id", "y"]]
 
-    y_train = X_train[[]].merge(labels, left_index=True, right_on="id")["y"]
-    y_valid = X_valid[[]].merge(labels, left_index=True, right_on="id")["y"]
+    y = (X.reset_index()[["image_id", "study_id"]]
+         .merge(labels, left_on="study_id", right_on="id")
+         .set_index("image_id")
+         ['y'])
+    # We were only keeping this to merge with y. Don't need it now.
+    del X["study_id"]
 
+    # Split into train and valid
+    tr, vl = make_data_class.get_tr_vl(valid_amt=0.3)
     return TrainValid(
-        X_train=X_train,
-        y_train=y_train,
-        X_valid=X_valid,
-        y_valid=y_valid,
+        X_train=X.loc[tr],
+        y_train=y.loc[tr],
+        X_valid=X.loc[vl],
+        y_valid=y.loc[vl],
     )
 
 
@@ -88,17 +97,35 @@ def train_xgb(tv: TrainValid) -> None:
     evals = [(dtrain, 'train'), (dvalid, 'valid')]
     bst = xgb.train(params, dtrain, num_boost_round=num_rounds, evals=evals, early_stopping_rounds=early_stop)
 
-    acc = (bst.predict(dvalid).argmax(1) == tv.y_valid).mean()
-    print(f"Accuracy: {acc}") # 0.829
-    
+    return bst
 
-tv = tv(is_neg=False)
+
+def plot_importance(bst):
+    xgb.plot_importance(bst)
+    plt.show()
+
+
+def print_importance(bst):
+    imp = dict(sorted(bst.get_score().items(), key=lambda t: -t[1]))
+    print(imp)
+
+
+def print_unused(tv, bst):
+    all_cols = set(tv.X_train.columns)
+    used_cols = set(bst.get_score())
+    unused_cols = all_cols - used_cols
+    print(unused_cols)
+
+
+# tv = get_train_valid(is_neg=False)
 
 
 def accuracy(cl):
     y = tv.y_valid.to_numpy()
-    y_hat = cl.predict(tv.X_valid)
-    print((y == y_hat).mean())
+    y_hat = cl.predict_proba(tv.X_valid)
+    pred_probs = y_hat[range(len(y)), y]
+    loss = -np.log(pred_probs).mean()
+    print(loss)
 
 
 def train_xtr():

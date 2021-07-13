@@ -6,7 +6,7 @@ from pydicom.pixel_data_handlers.util import apply_voi_lut
 from copy import deepcopy
 import pickle
 from pathlib import Path
-from typing import List, Dict, Optional, NamedTuple, Tuple, Any, Union
+from typing import List, Dict, Optional, NamedTuple, Tuple, Any, Union, Set
 from multiprocessing import Pool
 import os
 from PIL import Image
@@ -118,6 +118,8 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
 
     make_image_args: List[MakeImageArgs] = []
 
+    dups = get_dups()
+
     # Need to also have some train so that our dataloaders works. But we only take 70
     # so that there is enough for one batch
     for split in ['test'] if test_only else ['train']:
@@ -129,13 +131,17 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
         num = 0
         for dirname, _, filenames in tqdm(os.walk(const.DIR_ORIGINAL_DATA + split)):
             for file in filenames:
+                image_id_i = file[:-len('.dcm')]
+                if image_id_i in dups:
+                    continue
+
                 num += 1
 
                 make_image_args.append(
                     MakeImageArgs(dirname=dirname, file=file, extn=extn, size=size, save_dir=save_dir)
                 )
 
-                image_id.append(file[:-len('.dcm')])
+                image_id.append(image_id_i)
                 splits.append(split)
 
     pool = Pool(processes=5)
@@ -148,6 +154,75 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
         dim0, dim1 = tuple(zip(*shapes))
         df = DataFrame.from_dict({'image_id': image_id, 'dim0': dim0, 'dim1': dim1, 'split': splits})
         df.to_csv(meta_csv_out, index=False)
+
+
+# FIND DUPLICATES TO REMOVE #
+
+
+def _mkarr(p: str) -> np.array:
+    return np.array(Image.open(f"data_image/png224_dups/train/{p}.png"))
+
+
+def _is_same(p1: str, p2: str) -> bool:
+    na, nb = _mkarr(p1), _mkarr(p2)
+    return (na == nb).sum((0, 1)) / (224 ** 2) > 0.99
+
+
+def find_and_save_dups():
+    """
+    Requires:
+    - created images with dups
+    - created train_image_level_prep
+    """
+
+    # duplicate -> original
+    dups = {}
+
+    data = pd.read_csv("data_csv/train_image_level_prep.csv")
+    data["study"] = data.id.map(make_img_to_study_map())
+    for _study, group in data.groupby("study"):
+        id_to_boxes = dict(zip(group.id, group.boxes))
+
+        # Process each image to sort into unique groups
+        unique_gps = []
+        for img_id in group.id:
+            found = False
+            # See if it's in an existing group
+            for ug in unique_gps:
+                if not found and any(_is_same(img_id, ug_id) for ug_id in ug):
+                    ug.add(img_id)
+                    found = True
+            # If not, make a new group with it
+            if not found:
+                unique_gps.append({img_id})
+
+        for gp in unique_gps:
+            # Determine what to keep
+            boxes = {np.nan}
+            keep = set()
+            for id in gp:
+                boxes_i = id_to_boxes[id]
+                if boxes_i not in boxes:
+                    boxes.add(boxes_i)
+                    keep.add(id)
+            if len(keep) == 0:
+                keep = {list(gp)[0]}
+
+            # Mark duplicates
+            orig = list(keep)[0]
+            for dup in gp - keep:
+                dups[dup] = orig
+
+    with open("data_original/dups", "wb") as f:
+        pickle.dump(set(dups), f)
+
+
+def get_dups() -> Set[str]:
+    p = Path("data_original/dups")
+    if p.exists:
+        with open(p, "rb") as f:
+            return pickle.load(f)
+    return set()
 
 
 # MAKE CSV #
@@ -322,6 +397,8 @@ def add_feats_body_part(data: DataFrame, feats: DataFrame) -> None:
 
 def add_feats_sex(data: DataFrame, feats: DataFrame) -> None:
     add_feats(data=data, feats=feats, feat="PatientSex")
+    # This is redundant, there are only two genders
+    del feats['PatientSex_F']
 
 
 def add_feats_photometric(data: DataFrame, feats: DataFrame) -> None:

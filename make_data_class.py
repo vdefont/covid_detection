@@ -12,7 +12,7 @@ import itertools
 import const
 
 
-def setup_data() -> DataFrame:
+def _setup_data() -> DataFrame:
     img_data = pd.read_csv(const.DIR_ORIGINAL_DATA + "train_image_level.csv")
     img_data = img_data.rename(columns={'id': 'img_id', 'StudyInstanceUID': 'study_id'})
     img_data.img_id = img_data.img_id.str[:-6]
@@ -82,6 +82,28 @@ def get_tr_vl(data: DataFrame, valid_amt: float) -> Tuple[Set[str], Set[str]]:
     return set(tr), set(vl)
 
 
+def _get_fold_index(folds: List[Set[str]], val: str) -> int:
+    for i, fold in enumerate(folds):
+        if val in fold:
+            return i
+    raise Exception(f"{val} not found in any of the {len(folds)} folds!")
+
+
+def populate_dirs_folds(data: DataFrame, folds: List[Set[str]], src: Path, extn: str, dst: Path) -> None:
+    # Set up dirs
+    for c, fold_i in itertools.product(const.VOCAB_SHORT, range(len(folds))):
+        (dst / f"fold{fold_i}" / c).mkdir(parents=True)
+
+    # Copy images
+    img_id_to_label = dict(zip(data.img_id, data.label))
+    for p in (src / 'train').glob(f'*{extn}'):
+        id = p.name[:-4]
+        lab = img_id_to_label[id]
+        fold_i = _get_fold_index(folds=folds, val=id)
+        shutil.copy(p, dst/f"fold{fold_i}"/lab/p.name)
+
+
+
 def populate_dirs(data: DataFrame, X_tr: Iterable[str], X_ts: Iterable[str], src: Path, extn: str, dst: Path) -> None:
     # Set up dirs
     for c in const.VOCAB_SHORT:
@@ -102,9 +124,15 @@ def populate_dirs(data: DataFrame, X_tr: Iterable[str], X_ts: Iterable[str], src
 
 
 def create_data(src: Path, extn: str, dst: Path, valid_amt: float) -> None:
-    data = setup_data()
+    data = _setup_data()
     X_tr, X_ts = get_tr_vl(data=data, valid_amt=valid_amt)
     populate_dirs(data=data, X_tr=X_tr, X_ts=X_ts, src=src, extn=extn, dst=dst)
+
+
+def create_data_folds(src: Path, extn: str, dst: Path, num_folds: int) -> None:
+    data = _setup_data()
+    folds = get_folds(data=data, num_folds=num_folds)
+    populate_dirs_folds(data=data, folds=folds, src=src, extn=extn, dst=dst)
 
 
 def create_data_test_only(src: Path, dst: Path) -> None:
@@ -131,9 +159,11 @@ def validate_created_data(extn: str, dst: Path, test_only: bool) -> None:
             print(f"{c}: {num_imgs(p / c)}")
         print(f"Total: {num_imgs(p)}")
 
-    for sname in ['train', 'test'] if test_only else const.SNAMES:
-        print(sname)
-        vocab_amts(dst/sname)
+    for dir_p in dst.glob('*'):
+        if not dir_p.is_dir():
+            continue
+        print(dir_p.name)
+        vocab_amts(dir_p)
         print()
 
 
@@ -151,6 +181,13 @@ def create_and_validate_data(
         create_data(src=src_path, extn=extn, dst=dst_path, valid_amt=valid_amt)
 
     validate_created_data(extn=extn or 'png', dst=dst_path, test_only=test_only)
+
+
+def create_and_validate_data_folds(src: str, dst: str, num_folds: int, extn: str = "png") -> None:
+    src_path = const.subdir_data_image(path=True) / src
+    dst_path = const.subdir_data_class(path=True) / dst
+    create_data_folds(src=src_path, extn=extn, dst=dst_path, num_folds=num_folds)
+    validate_created_data(extn=extn, dst=dst_path, test_only=False)
 
 
 def create_and_validate_data_mf(src: str, test_only: bool = False) -> None:
@@ -184,4 +221,7 @@ def create_and_validate_data_mf(src: str, test_only: bool = False) -> None:
     validate_created_data(extn="png", dst=dir_f, test_only=test_only)
 
 
+# create_and_validate_data_folds(src="png224", dst="png224_3fold", num_folds=3)
+# create_and_validate_data_folds(src="png224", dst="png224_5fold", num_folds=5)
+# create_and_validate_data_folds(src="png224", dst="png224_10fold", num_folds=10)
 # create_and_validate_data(src="png224", extn="png", dst="png224", valid_amt=0.3)
