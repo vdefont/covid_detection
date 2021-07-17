@@ -30,14 +30,23 @@ def _setup_data() -> DataFrame:
     return data
 
 
-def get_folds(data: DataFrame, num_folds: int) -> List[Set[str]]:
+def get_folds(data: Optional[DataFrame] = None, num_folds: int = 5, boxes: bool = False) -> List[Set[str]]:
     """
     Strategy:
     - Group images by study_id, and bucket these groups by label
         (so we have four buckets, each containing many groups)
     - Split up the groups so that the five folds have about an
      equal number of individual samples
+
+    If boxes is True, we only consider images where there are boxes
     """
+    data = data or _setup_data()
+
+    if boxes is True:
+        image_data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
+        ids_with_boxes = image_data.id[~image_data.boxes.isna()]
+        data = data[data.img_id.isin(ids_with_boxes)]
+
     random.seed(42)
     lab_to_gps = defaultdict(list)
     for name, group in data.groupby(['label', 'study_id']):
@@ -55,13 +64,15 @@ def get_folds(data: DataFrame, num_folds: int) -> List[Set[str]]:
     return [set(pd.concat(gps).img_id) for gps in fold_gps]
 
 
-def get_tr_vl(data: DataFrame, valid_amt: float) -> Tuple[Set[str], Set[str]]:
+def get_tr_vl(data: Optional[DataFrame] = None, valid_amt: float = 0.3) -> Tuple[Set[str], Set[str]]:
     """
     Strategy:
     - Group images by study_id, and bucket these groups by label
     - For each label bucket, split up the gps so that train+val
       have about an equal number of individual samples
     """
+    data = data or _setup_data()
+
     random.seed(42)
     lab_to_gps = defaultdict(list)
     for name, group in data.groupby(['label', 'study_id']):

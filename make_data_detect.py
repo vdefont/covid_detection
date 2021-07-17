@@ -8,6 +8,7 @@ import shutil
 import pickle
 
 import const
+import make_data_class
 
 
 class Frame(NamedTuple):
@@ -386,6 +387,69 @@ def create_box_data(frame_new: Frame, src_dir_str: str, dst_dir_str: str, extn: 
             shutil.copy(p, dst_dir/'train'/'images'/p.name)
             xml_name = p.name.replace(f'.{extn}', '.xml')
             shutil.copy(dst_dir/'test'/'annotations'/xml_name, dst_dir/'train'/'annotations'/xml_name)
+
+
+def analyze_created_data(dst: str, extn: str) -> None:
+    dst_dir = const.subdir_data_detect(path=True) / dst
+    uniques = set()
+    for subdir in dst_dir.glob('*'):
+        if not subdir.is_dir():
+            continue
+        imgs = list(subdir.glob(f'**/*{extn}'))
+        count = len(imgs)
+        print(f"{subdir.name}: {count}")
+        uniques |= {img.name.replace(f'.{extn}', '') for img in imgs}
+
+    print(f"Num unique: {len(uniques)}")
+
+
+
+def create_box_data_folds(frame_new: Frame, src: str, dst: str, extn: str, num_folds: int) -> None:
+    """
+    Reads from data_image/
+    Writes to data_detect/
+    """
+    folds = make_data_class.get_folds(num_folds=num_folds, boxes=True)
+    id_to_fold = {id: i for i, ids in enumerate(folds) for id in ids}
+
+    src_dir = const.subdir_data_image(path=True) / src
+    dst_dir = const.subdir_data_detect(path=True) / dst
+    dst_boxes = const.subdir_data_detect(path=True) / f"{dst}_boxes"
+
+    for i in range(num_folds):
+        base = dst_dir / f'fold{i}'
+        (base / 'annotations').mkdir(parents=True)
+        (base / 'images').mkdir()
+
+    id_to_boxes = {}
+    image_data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
+    for p in src_dir.glob(f'**/*{extn}'):
+        # Get id, fold, and paths
+        id = p.name.replace(f'.{extn}', '')
+        if id not in id_to_fold:
+            continue
+        fold = id_to_fold[id]
+        base = dst_dir / f'fold{fold}'
+        image_path = base / 'images' / f'{id}.{extn}'
+        annotation_path = base / 'annotations' / f'{id}.xml'
+
+        # Get boxes
+        rows = image_data[image_data.id == id]
+        row = rows.iloc[0]
+        assert not pd.isna(row.boxes), "Should have set up folds to only have boxes"
+        boxes = make_boxes(row=row, frame_new=frame_new)
+        id_to_boxes[id] = boxes
+
+        # Write image and annotations
+        annotation = make_xml(path=image_path, boxes=boxes, frame_new=frame_new)
+        shutil.copy(p, image_path)  # Copy image
+        with open(annotation_path, 'w') as f:
+            f.write(annotation)
+
+    with open(dst_boxes, 'wb') as f:
+        pickle.dump(id_to_boxes, f)
+
+    analyze_created_data(dst=dst, extn=extn)
 
 
 def make_boxes_png_224(test_only: bool = False):

@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Union
+from enum import Enum
 
 
 DIR_BASE_MODELS = "./base_models/"
@@ -14,17 +15,26 @@ SUBDIR_MODELS_CLASS = "models_class/"
 SUBDIR_PREDS_CLASS = "preds_class/"
 SUBDIR_MODELS_NEG = "models_neg/"
 SUBDIR_PREDS_NEG = "preds_neg/"
+SUBDIR_MODELS_XGB = "models_xgb/"
 SUBDIR_MODELS_DETECT = "models_detect/"
 SUBDIR_PREDS_DETECT = "preds_detect/"
 SUBDIR_PREDS_FINAL = "preds_final/"
 SUBDIR_MODELS_KAGGLE = "models_kaggle/"
 
-VOCAB_SHORT = ["neg", "typ", "ind", "atyp"]
+
+class Vocab(Enum):
+    NEG = "neg"
+    TYP = "typ"
+    IND = "ind"
+    ATYP = "atyp"
+
+
+VOCAB_SHORT = [Vocab.NEG.value, Vocab.TYP.value, Vocab.IND.value, Vocab.ATYP.value]
 VOCAB_SHORT_TO_LONG = {
-    'neg': 'negative',
-    'typ': 'typical',
-    'ind': 'indeterminate',
-    'atyp': 'atypical',
+    Vocab.NEG.value: 'negative',
+    Vocab.TYP.value: 'typical',
+    Vocab.IND.value: 'indeterminate',
+    Vocab.ATYP.value: 'atypical',
 }
 VOCAB_LONG = [VOCAB_SHORT_TO_LONG[v] for v in VOCAB_SHORT]
 VOCAB_FULL = [
@@ -97,6 +107,11 @@ def subdir_models_neg():
 @maybe_path
 def subdir_preds_neg():
     return DIR_WORKING + SUBDIR_PREDS_NEG
+
+
+@maybe_path
+def subdir_models_xgb():
+    return DIR_WORKING + SUBDIR_MODELS_XGB
 
 
 @maybe_path

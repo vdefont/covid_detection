@@ -131,6 +131,8 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
         num = 0
         for dirname, _, filenames in tqdm(os.walk(const.DIR_ORIGINAL_DATA + split)):
             for file in filenames:
+                if not file.endswith('.dcm'):
+                    continue
                 image_id_i = file[:-len('.dcm')]
                 if image_id_i in dups:
                     continue
@@ -219,7 +221,7 @@ def find_and_save_dups():
 
 def get_dups() -> Set[str]:
     p = Path("data_original/dups")
-    if p.exists:
+    if p.exists():
         with open(p, "rb") as f:
             return pickle.load(f)
     return set()
@@ -325,6 +327,8 @@ def get_metadata_raw(sname):
 
 # Adding generic features
 def add_feats(data: DataFrame, feats: DataFrame, feat: str, vals: Optional[List[Union[str, int]]] = None) -> None:
+    if vals is None:
+        raise Exception("Please provide vals! (comment this for testing)")
     vals = vals or data[feat].unique()
 
     for val in vals:
@@ -396,21 +400,20 @@ def add_feats_body_part(data: DataFrame, feats: DataFrame) -> None:
 
 
 def add_feats_sex(data: DataFrame, feats: DataFrame) -> None:
-    add_feats(data=data, feats=feats, feat="PatientSex")
-    # This is redundant, there are only two genders
-    del feats['PatientSex_F']
+    # There are only two genders, so we only need one
+    add_feats(data=data, feats=feats, feat="PatientSex", vals=['M'])
 
 
 def add_feats_photometric(data: DataFrame, feats: DataFrame) -> None:
-    add_feats(data, feats, "PhotometricInterpretation")
+    add_feats(data, feats, "PhotometricInterpretation", ['MONOCHROME1', 'MONOCHROME2'])
 
 
 def add_feats_modality(data: DataFrame, feats: DataFrame) -> None:
-    add_feats(data, feats, "Modality")
+    add_feats(data, feats, "Modality", ['DX', 'CR'])
 
 
 def add_feats_charset(data: DataFrame, feats: DataFrame) -> None:
-    add_feats(data, feats, "SpecificCharacterSet")
+    add_feats(data, feats, "SpecificCharacterSet", ['ISO_IR 100', 'ISO_IR 192'])
 
 
 def make_metadata_feats(sname: str) -> None:

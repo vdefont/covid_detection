@@ -3,7 +3,7 @@ import albumentations
 import pickle
 import torch
 from torch import Tensor
-from typing import Iterable, Optional, List, Dict, Callable, Tuple, Any
+from typing import Iterable, Optional, List, Dict, Callable, Tuple, Any, Union
 from pathlib import Path
 import tqdm
 
@@ -70,7 +70,7 @@ def get_dls(
             GrandparentSplitter(valid_name=('test' if test_only else 'valid'))
             if fold_valid is None else FoldSplitter(fold_valid=fold_valid)
         ),
-        item_tfms = [Resize(int(img_size * presize_amt)), AlbumentationsTransform(get_train_aug(img_size=img_size))],
+        item_tfms=[Resize(int(img_size * presize_amt)), AlbumentationsTransform(get_train_aug(img_size=img_size))],
         batch_tfms=[
             Brightness(max_lighting=0.05, p=0.75),
             Contrast(max_lighting=0.2, p=0.75),
@@ -114,13 +114,8 @@ def _save_model(model_name: str, is_neg: bool, model: nn.Module) -> None:
         pickle.dump(model, f)
 
 
-def _load_model(model_name: str, is_neg: bool, num_folds: Optional[int], fold_i: Optional[int]) -> nn.Module:
-    assert not ((num_folds is None) ^ (fold_i is None))
-    if num_folds:
-        model_name = f"{model_name}_{num_folds}fold"
+def _load_model(model_name: str, is_neg: bool) -> nn.Module:
     path = _get_model_path(model_name=model_name, is_neg=is_neg)
-    if fold_i:
-        path = path / f"fold{fold_i}"
     with open(path, 'rb') as f:
         return pickle.load(f)
 
@@ -139,6 +134,64 @@ def make_base_models():
         _save_model(model_name=name, is_neg=True, model=model)
 
 
+# METRIC #
+
+
+def single_map(probs: np.array, targs: np.array):
+    """
+    targs: 0 or 1
+    """
+    prob_targs = sorted(zip(probs, targs), key=lambda pt: -pt[0])
+    targs = np.array([pt[1] for pt in prob_targs]).astype(int)
+
+    map_acc = 1.
+    incr = targs.sum() / 10
+    target = incr
+    correct_so_far = 0
+    for i, t in enumerate(targs):
+        correct_so_far += t
+        while correct_so_far >= target:
+            map_acc += correct_so_far / (i + 1)
+            target += incr
+    return map_acc / 11
+
+
+def test_single_map():
+    probs = [1,.8,.6,.4,.2,.9,.7,.5,.3,.1]
+    targs = [1, 1, 0, 0, 0, 0, 1, 1, 1, 1]
+    map = single_map(probs, targs)
+    print(f"MAP: {map}")
+    expected = np.mean([1,1,2/3,2/3,3/4,3/4,4/6,5/8,5/8,6/10,6/10])
+    print(f"Expected: {expected}")
+
+
+def preds_map(preds, targs) -> float:
+    maps = []
+    for i in range(preds.shape[1]):
+        probs_i = preds[:, i]
+        targs_i = np.array(targs) == i
+        maps.append(single_map(probs_i, targs_i))
+    return np.mean(maps) * 2/3
+
+
+def test_preds_map():
+    preds = np.array([
+        [0,1.],
+        [1,.9],
+        [0,.8],
+        [0,.7],
+        [1,.6],
+        [0,.5],
+        [1,.4],
+        [0,.3],
+        [1,.2],
+        [0,.1],
+    ])
+    targs = [1,0,1,1,0,1,0,1,0,1]
+    pm = preds_map(preds, targs)
+    print(f"Actual: {pm}")
+    print(f"Expected: {(0.7227272727272727 + 1) / 2 * 2 / 3}")
+
 # LEARN #
 
 
@@ -146,12 +199,10 @@ def get_learn(
         dls: DataLoaders,
         model_name: str,
         is_neg: bool,
-        load_model: bool = False,
-        num_folds: Optional[int] = None,
-        fold_i: Optional[int] = None,
+        load_model_fold: Optional[int] = None,
 ) -> Learner:
     # Include "name" to load pre-trained weights
-    model = _load_model(model_name=model_name, is_neg=is_neg, num_folds=num_folds, fold_i=fold_i)
+    model = _load_model(model_name=model_name, is_neg=is_neg)
     learn = Learner(
         dls=dls,
         model=model,
@@ -159,9 +210,9 @@ def get_learn(
         # metrics=accuracy,
     )
     learn.unfreeze()
-    if load_model:
+    if load_model_fold is not None:
         load_dir = const.subdir_models_neg(path=True) if is_neg else const.subdir_models_class(path=True)
-        learn.model.load_state_dict(torch.load(str(load_dir/model_name)))
+        learn.model.load_state_dict(torch.load(str(load_dir/model_name/f"fold{load_model_fold}")))
     return learn
 
 
@@ -190,25 +241,40 @@ def _get_save_dir(name: str, is_neg: bool) -> Path:
     return ret / name
 
 
-def predict_and_save(learn: Learner, sname: str, model_name: str, n_tta: int, is_neg: bool) -> Tuple[Tensor, Tensor]:
-    idx = 0 if sname == 'train' else 1
+def predict_and_save(
+        learn: Union[Learner, List[Learner]],
+        sname: str,
+        model_name: str,
+        n_tta: int,
+        is_neg: bool,
+) -> Tuple[Tensor, Tensor]:
+    learns = learn if isinstance(learn, List) else [learn]
 
-    if n_tta > 0:
-        preds, targs = learn.tta(idx, n=n_tta)
-    else:
-        preds, targs = learn.get_preds(ds_idx=idx)
+    df_acc = None
 
-    # When predicting train + valid on vastai, we want to append "_preds"
-    # But *not* when predicting test set on kaggle!
-    model_name_extn = "" if sname == 'test' else "_preds"
-    save_dir = _get_save_dir(name=(model_name + model_name_extn), is_neg=is_neg)
+    for learn in learns:
+        idx = 0 if sname == 'train' else 1
+        if n_tta > 0:
+            preds, targs = learn.tta(idx, n=n_tta)
+        else:
+            preds, targs = learn.get_preds(ds_idx=idx)
 
-    df = pd.DataFrame(preds.numpy())
-    dl = learn.dls.train if sname == 'train' else learn.dls.valid
-    df.columns = learn.dls.vocab
-    df.index = _get_dl_names(dl=dl)
-    if not Path(save_dir).exists():
-        Path(save_dir).mkdir(parents=True)
+        # When predicting train + valid on vastai, we want to append "_preds"
+        # But *not* when predicting test set on kaggle!
+        model_name_extn = "" if sname == 'test' else "_preds"
+        save_dir = _get_save_dir(name=(model_name + model_name_extn), is_neg=is_neg)
+
+        df = pd.DataFrame(preds.numpy())
+        dl = learn.dls.train if sname == 'train' else learn.dls.valid
+        df.columns = learn.dls.vocab
+        df.index = _get_dl_names(dl=dl)
+        if not Path(save_dir).exists():
+            Path(save_dir).mkdir(parents=True)
+
+        df_acc = df if df_acc is None else df + df_acc
+
+    df = df_acc / len(learn)
+
     df.to_csv(str(save_dir/sname) + ".csv")
 
     return preds, targs
@@ -242,7 +308,7 @@ def predict_and_save_folds(
     save_dir = _get_save_dir(name=f"{model_name}_{len(learn_folds)}fold", is_neg=is_neg)
     if not Path(save_dir).exists():
         Path(save_dir).mkdir(parents=True)
-    df.to_csv(str(save_dir/f'valid}') + ".csv")
+    df.to_csv(str(save_dir/'valid') + ".csv")
 
     return preds, targs
 

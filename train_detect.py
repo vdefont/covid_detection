@@ -31,13 +31,17 @@ def make_records(box_dir: str, sname: str):
     return records
 
 
-def get_ds_train(box_dir, image_size):
+def get_ds_train(box_dir, image_size, fold_valid):
     box_dir = const.subdir_data_detect() + box_dir
     train_tfms = tfms.A.Adapter([
         tfms.A.Resize(image_size, image_size),
         tfms.A.Normalize(),
     ])
-    records = make_records(box_dir=box_dir, sname='train')
+    records = []
+    for subdir in Path(box_dir).glob('*'):
+        if (not subdir.is_dir()) or subdir.name == f"fold{fold_valid}":
+            continue
+        records += make_records(box_dir=box_dir, sname=subdir.name)
     return Dataset(records, train_tfms)
 
 
@@ -50,9 +54,9 @@ def get_ds_valid(box_dir, image_size, sname='valid'):
     return Dataset(records, valid_tfms)
 
 
-def get_ds_train_valid(box_dir, image_size):
-    train_ds = get_ds_train(box_dir=box_dir, image_size=image_size)
-    valid_ds = get_ds_valid(box_dir=box_dir, image_size=image_size)
+def get_ds_train_valid(box_dir: str, image_size: int, fold_valid: int):
+    train_ds = get_ds_train(box_dir=box_dir, image_size=image_size, fold_valid=fold_valid)
+    valid_ds = get_ds_valid(box_dir=box_dir, image_size=image_size, sname=f"fold{fold_valid}")
     return train_ds, valid_ds
 
 
@@ -282,9 +286,11 @@ class MapMetric(Metric):
 
 # LEARN #
 
-def get_learner(train_dl, valid_dl, model_name, load_model: bool = False):
+def get_learner(
+        train_dl, valid_dl, model_name, load_model_fold: Optional[int] = None, no_init_load: bool = False
+):
     model_type = model_name_to_type(model_name)
-    if load_model:
+    if load_model_fold is not None and not no_init_load:
         model = _load_model(model_name=model_name)
     else:
         model = _get_model(name=model_name)
@@ -293,12 +299,13 @@ def get_learner(train_dl, valid_dl, model_name, load_model: bool = False):
 
     # For some reason unfreeze() does not work at test time, so let's
     # only do it when training
-    if not load_model:
+    if load_model_fold is None:
         learn.unfreeze()
-
-    if load_model:
+    else:
         load_dir = const.subdir_models_detect(path=True)
-        learn.model.load_state_dict(torch.load(load_dir/model_name))
+        load_path = load_dir/f"{model_name}_5fold"/f"fold{load_model_fold}"
+        print(f"LOAD PATH: {load_path}")
+        learn.model.load_state_dict(torch.load(load_path))
 
     config = dict(learn.model.config)
     config['act_type'] = 'silu'
@@ -307,9 +314,17 @@ def get_learner(train_dl, valid_dl, model_name, load_model: bool = False):
     return learn
 
 
-def save_learner(learn: Any, model_name: str) -> None:
+def save_learn(learn: Any, model_name: str) -> None:
     save_dir = const.subdir_models_detect(path=True)
     torch.save(learn.model.state_dict(), save_dir / model_name)
+
+
+def save_learn_folds(learn_folds: List[Any], model_name: str) -> None:
+    save_dir = const.subdir_models_detect(path=True)
+    save_dir = save_dir / f"{model_name}_{len(learn_folds)}fold"
+    save_dir.mkdir()
+    for fold_i, learn in enumerate(learn_folds):
+        torch.save(learn.model.state_dict(), save_dir / f'fold{fold_i}')
 
 
 # INFERENCE #
@@ -319,27 +334,27 @@ def _get_preds(model_type, model, infer_ds):
     return model_type.predict_from_dl(model=model, infer_dl=infer_dl, keep_images=True, detection_threshold=0.)
 
 
-def predict_and_save(box_dir: str, image_size: int, model_name: str, model, test_only: bool = False) -> Dict[str, Any]:
+def predict_and_save(box_dir: str, image_size: int, model_name: str, model, fold: int) -> Any:
+    """
+    Assumes that we are predicting the test set
+
+    fold: Use the model for the given fold
+    """
     model_type = model_name_to_type(model_name)
 
-    # When predicting train + valid on vastai, we want to append "_preds"
-    # But *not* when predicting test set on kaggle!
-    model_name_extn = "" if test_only else "_preds"
-    save_dir = const.subdir_preds_detect(path=True) / (model_name + model_name_extn)
+    save_dir = const.subdir_preds_detect(path=True) / model_name
     if not save_dir.exists():
         save_dir.mkdir()
-    snames = ['test'] if test_only else ['train', 'valid']
-    ret = {}
-    for sname in snames:
-        infer_ds = get_ds_valid(box_dir=box_dir, image_size=image_size, sname=sname)
-        ids = [r.as_dict()['common']['filepath'].name[:-len('.png')] for r in infer_ds.records]
-        cur_preds = _get_preds(model_type=model_type, model=model, infer_ds=infer_ds)
-        cur_preds = [pred.pred.as_dict()['detection'] for pred in cur_preds]
-        cur_preds = dict(zip(ids, cur_preds))
-        with open(save_dir/sname, 'wb') as f:
-            pickle.dump(cur_preds, f)
-        ret[sname] = cur_preds
-    return ret
+
+    infer_ds = get_ds_valid(box_dir=box_dir, image_size=image_size, sname="test")
+    ids = [r.as_dict()['common']['filepath'].name[:-len('.png')] for r in infer_ds.records]
+    cur_preds = _get_preds(model_type=model_type, model=model, infer_ds=infer_ds)
+    cur_preds = [pred.pred.as_dict()['detection'] for pred in cur_preds]
+    cur_preds = dict(zip(ids, cur_preds))
+    with open(save_dir/f"fold{fold}", 'wb') as f:
+        pickle.dump(cur_preds, f)
+
+    return cur_preds
 
 
 # FETCH BOXES FROM OUTPUT FILE #
@@ -358,10 +373,9 @@ def unscale_boxes(new_frame: Frame, boxes: Dict[str, List[Box]], sname: str) -> 
         for id, bs in tqdm.tqdm(boxes.items(), desc="Unscaling boxes")
     }
 
-def _non_max_suppression(boxes: List[Box]) -> List[Box]:
+def _non_max_suppression(boxes: List[Box], thresh: float) -> List[Box]:
     """
-    I observe an increase 0.14332 -> 0.14349
-    - Almost nothing, but...
+    Thresh: if it exceeds this IOU, it is cut
     """
     boxes = sorted(boxes, key=lambda box: -box.C)
     ret = [boxes[0]]
@@ -369,13 +383,13 @@ def _non_max_suppression(boxes: List[Box]) -> List[Box]:
         max_iou = max(_iou(box, ret_box) for ret_box in ret)
         # mult = 5 ** -max_iou
         # ret.append(Box(X=box.X, Y=box.Y, W=box.W, H=box.H, C=box.C * mult))
-        if max_iou <= 0.3:
+        if max_iou <= thresh:
             ret.append(box)
     return ret
 
 
 def get_box_preds(
-        preds_path_detect: Path, new_frame: Frame, sname: str = 'test', nms: bool = False
+        preds_path_detect: Path, new_frame: Frame, sname: str = 'test', nms: Optional[float] = None
 ) -> Dict[str, List[Box]]:
     """
     Returns: id -> boxes
@@ -393,9 +407,9 @@ def get_box_preds(
     ret = unscale_boxes(new_frame=new_frame, boxes=ret, sname=sname)
 
     # Optionall apply non-max suppression
-    if nms:
+    if nms is not None:
         for id, boxes in tqdm.tqdm(ret.items(), desc="Non-max suppression"):
-            ret[id] = _non_max_suppression(boxes=boxes)
+            ret[id] = _non_max_suppression(boxes=boxes, thresh=nms)
 
     return ret
 
