@@ -6,6 +6,8 @@ from torch import Tensor
 from typing import Iterable, Optional, List, Dict, Callable, Tuple, Any, Union
 from pathlib import Path
 import tqdm
+from PIL import Image
+import timm
 
 import const
 
@@ -14,7 +16,7 @@ import const
 
 
 def get_y_neg(path: Path) -> str:
-    return 'negative' if path.parent.name == 'neg' else 'positive'
+    return const.VocabNeg.NEG.value if path.parent.name == const.Vocab.NEG.value else const.VocabNeg.POS.value
 
 
 class AlbumentationsTransform(Transform):
@@ -25,9 +27,9 @@ class AlbumentationsTransform(Transform):
         return PILImage.create(aug_img)
 
 
-def get_train_aug(img_size: int):
+def get_train_aug(orig_img_size: int):
     # TUNED (cutout, and tried all others)
-    cutout_size = int(img_size * 0.3)
+    cutout_size = int(orig_img_size * 0.3)
     return albumentations.Compose([
         albumentations.Cutout(num_holes=1, max_h_size=cutout_size, max_w_size=cutout_size, p=0.7),
     ])
@@ -55,12 +57,14 @@ def get_dls(
         presize_amt: float = 1,
         fold_valid: Optional[int] = None,
         test_only: bool = False,
+        batch_size: int = 32,
+        flip_p: float = 0.5,
+        normalize_stats: Optional[Any] = None,
 ) -> DataLoaders:
     """
     NOTE: This does not work on my machine for some reason, but it works on vastai and kaggle (I think)
     """
-    if img_size > 224 and presize_amt == 1:
-        raise Exception("You probably should presize!")
+    orig_img_size = int(re.match(r'[^\d]*(\d*)', image_path).group(1))
 
     data_block = DataBlock(
         get_items=get_image_files,
@@ -70,74 +74,114 @@ def get_dls(
             GrandparentSplitter(valid_name=('test' if test_only else 'valid'))
             if fold_valid is None else FoldSplitter(fold_valid=fold_valid)
         ),
-        item_tfms=[Resize(int(img_size * presize_amt)), AlbumentationsTransform(get_train_aug(img_size=img_size))],
+        item_tfms=[
+            Resize(int(img_size * presize_amt)),
+            AlbumentationsTransform(get_train_aug(orig_img_size=orig_img_size))
+        ],
         batch_tfms=[
             Brightness(max_lighting=0.05, p=0.75),
             Contrast(max_lighting=0.2, p=0.75),
             *aug_transforms(size=img_size, max_rotate=3, max_warp=0, max_lighting=0, max_zoom=1.0),
-            Normalize(),
+            Normalize.from_stats(*normalize_stats) if normalize_stats is not None else Normalize(),
         ]
     )
 
-    return data_block.dataloaders(const.subdir_data_class(path=True) / image_path, bs=32)
+    return data_block.dataloaders(const.subdir_data_class(path=True) / image_path, bs=batch_size)
 
 
 # MODEL #
 
 
-ARCH_FEATS = {
-    resnet18: 512,
-    resnet34: 512,
-    resnet50: 2048,
-    resnet101: 2048,
-    resnet152: 2048,
+ARCH_CUT = {
+    resnet18: -2,
+    resnet34: -2,
+    resnet50: -2,
+    resnet101: -2,
+    resnet152: -2,
+    densenet121: -1,
+    densenet161: -1,
+    densenet169: -1,
+    densenet201: -1,
 }
 
 
-def _get_model(arch: Callable, is_neg: bool, head_dropout: float = 0.) -> nn.Module:
-    body = create_body(arch, cut=-2)
-    head = create_head(ARCH_FEATS[arch], 2 if is_neg else 4, ps=head_dropout)
+TIMM_SHORT_TO_LONG = {}
+for i in range(5):
+    TIMM_SHORT_TO_LONG[f"efflite{i}"] = f"efficientnet_lite{i}"
+for i in range(9):
+    TIMM_SHORT_TO_LONG[f"effnet{i}"] = f"efficientnet_b{i}"
+
+
+def _create_timm_body(arch: str) -> nn.Module:
+    "Creates a body from any model in the `timm` library."
+    model = timm.create_model(TIMM_SHORT_TO_LONG[arch], pretrained=True, num_classes=0, global_pool='')
+    ll = list(enumerate(model.children()))
+    cut = next(i for i,o in reversed(ll) if has_pool_type(o))
+    return nn.Sequential(*list(model.children())[:cut])
+
+
+def _get_body(arch: Union[Callable, str]) -> nn.Module:
+    if isinstance(arch, Callable):
+        return create_body(arch, cut=ARCH_CUT[arch])
+    assert isinstance(arch, str)
+    return _create_timm_body(arch=arch)
+
+
+def _get_model(body: nn.Module, is_neg: bool, head_dropout: float = 0.) -> nn.Module:
+    head = create_head(num_features_model(body), 2 if is_neg else 4, ps=head_dropout)
     return nn.Sequential(body, head)
 
 
-def _get_model_path(model_name: str, is_neg: bool) -> Path:
-    base = const.dir_base_models(path=True)
-    extn = "neg" if is_neg else "class"
-    return base / extn / model_name
+def get_model(arch: Union[Callable, str], is_neg: bool, head_dropout: float = 0.) -> nn.Module:
+    body = _get_body(arch=arch)
+    return _get_model(body=body, is_neg=is_neg, head_dropout=head_dropout)
 
 
-def _save_model(model_name: str, is_neg: bool, model: nn.Module) -> None:
-    path = _get_model_path(model_name=model_name, is_neg=is_neg)
+def _get_model_path(model_name: str) -> Path:
+    return const.dir_base_models(path=True) / 'class' / model_name
+
+
+def _save_model(model_name: str, model: nn.Module) -> None:
+    path = _get_model_path(model_name=model_name)
     if not path.parent.exists():
         path.parent.mkdir(parents=True)
     with open(path, 'wb') as f:
         pickle.dump(model, f)
 
 
+def make_base_models(model_names: Iterable[Union[Callable, str]]):
+    """
+    Saves the model bodies
+    """
+    for name in model_names:
+        model = _get_body(arch=name)
+        name_str = name if isinstance(name, str) else name.__name__
+        _save_model(model_name=name_str, model=model)
+
+
 def _load_model(model_name: str, is_neg: bool) -> nn.Module:
-    path = _get_model_path(model_name=model_name, is_neg=is_neg)
+    """
+    Loads the model, after attaching the appropriate head
+    """
+    path = _get_model_path(model_name=model_name)
     with open(path, 'rb') as f:
-        return pickle.load(f)
+        body = pickle.load(f)
+    return _get_model(body=body, is_neg=is_neg)
 
 
-def make_base_models():
-    models_class = {
-        "resnet18": _get_model(resnet18, is_neg=False, head_dropout=0.),
-    }
-    for name, model in models_class.items():
-        _save_model(model_name=name, is_neg=False, model=model)
-
-    models_neg = {
-        "resnet18": _get_model(resnet18, is_neg=True, head_dropout=0.),
-    }
-    for name, model in models_neg.items():
-        _save_model(model_name=name, is_neg=True, model=model)
+def model_size(m: nn.Module) -> None:
+    # Prints number of params, in millions
+    ret = 0
+    for p in m.parameters():
+        ret += p.numel()
+    ret /= 1_000_000
+    print(f"{ret:.1f}m parameters")
 
 
 # METRIC #
 
 
-def single_map(probs: np.array, targs: np.array):
+def single_map(probs: np.ndarray, targs: np.ndarray):
     """
     targs: 0 or 1
     """
@@ -166,10 +210,15 @@ def test_single_map():
 
 
 def preds_map(preds, targs) -> float:
+    if not isinstance(preds, np.ndarray):
+        preds, targs = np.array(preds.cpu()), np.array(targs.cpu())
     maps = []
     for i in range(preds.shape[1]):
         probs_i = preds[:, i]
         targs_i = np.array(targs) == i
+        if np.sum(targs_i) == 0:
+            print(f"No {i}.", end="")
+            continue
         maps.append(single_map(probs_i, targs_i))
     return np.mean(maps) * 2/3
 
@@ -200,19 +249,26 @@ def get_learn(
         model_name: str,
         is_neg: bool,
         load_model_fold: Optional[int] = None,
+        loss_func: Optional[Any] = None,
+        cbs: Optional[Any] = None,
 ) -> Learner:
     # Include "name" to load pre-trained weights
     model = _load_model(model_name=model_name, is_neg=is_neg)
     learn = Learner(
         dls=dls,
         model=model,
-        loss_func=CrossEntropyLossFlat(),
-        # metrics=accuracy,
+        loss_func=CrossEntropyLossFlat() if loss_func is None else loss_func,
+        # metrics=[AccumMetric(preds_map)],
+        cbs=cbs,
     )
     learn.unfreeze()
     if load_model_fold is not None:
         load_dir = const.subdir_models_neg(path=True) if is_neg else const.subdir_models_class(path=True)
-        learn.model.load_state_dict(torch.load(str(load_dir/model_name/f"fold{load_model_fold}")))
+        map_location = None if torch.cuda.is_available() else torch.device('cpu')
+        learn.model.load_state_dict(torch.load(
+            str(load_dir/model_name/f"fold{load_model_fold}"),
+            map_location=map_location,
+        ))
     return learn
 
 
@@ -247,14 +303,24 @@ def predict_and_save(
         model_name: str,
         n_tta: int,
         is_neg: bool,
+        dls_tta: Optional[Any] = None,
 ) -> Tuple[Tensor, Tensor]:
     learns = learn if isinstance(learn, List) else [learn]
+
+    # Set the dataloaders for TTA
+    if dls_tta is not None:
+        dls_tta = dls_tta if isinstance(dls_tta, List) else [dls_tta]
+        assert len(learns) == len(dls_tta)
+        for learn, dls in zip(learns, dls_tta):
+            learn.dls = dls
 
     df_acc = None
 
     for learn in learns:
         idx = 0 if sname == 'train' else 1
-        if n_tta > 0:
+        if n_tta < 0:  # Dummy local testing:
+            preds, targs = torch.rand((2, 2 if is_neg else 4)), torch.Tensor([0, 1])
+        elif n_tta > 0:
             preds, targs = learn.tta(idx, n=n_tta)
         else:
             preds, targs = learn.get_preds(ds_idx=idx)
@@ -273,23 +339,36 @@ def predict_and_save(
 
         df_acc = df if df_acc is None else df + df_acc
 
-    df = df_acc / len(learn)
-
+    df = df_acc / len(learns)
+    # df = df[const.VOCAB_NEG if is_neg else const.VOCAB_SHORT]  # Put columns in the right order
     df.to_csv(str(save_dir/sname) + ".csv")
 
     return preds, targs
 
 
 def predict_and_save_folds(
-        learn_folds: List[Learner], model_name: str, n_tta: int, is_neg: bool
+        learn_folds: List[Learner],
+        model_name: str,
+        n_tta: int,
+        is_neg: bool,
+        dls_tta: Optional[List[Any]] = None,
 ) -> Tuple[Tensor, Tensor]:
     """
     Assumptions:
     - This is happening on vastai
     - We are only predicting the validation set
     """
+
+    # Set the dataloaders for TTA
+    if dls_tta is not None:
+        assert len(learn_folds) == len(dls_tta)
+        for learn, dls in zip(learn_folds, dls_tta):
+            learn.dls = dls
+
+    vocab = learn_folds[0].dls.vocab
     preds_ls, targs_ls, idx_ls = [], [], []
     for learn in learn_folds:
+        assert learn.dls.vocab == vocab
         if n_tta == 0:
             preds, targs = learn.get_preds(ds_idx=1)
         else:
@@ -303,7 +382,7 @@ def predict_and_save_folds(
     targs = torch.cat(targs_ls)
     idx = np.concatenate(idx_ls)
 
-    df = pd.DataFrame(preds.numpy())
+    df = pd.DataFrame(preds.numpy(), columns=vocab)
     df.index = idx
     save_dir = _get_save_dir(name=f"{model_name}_{len(learn_folds)}fold", is_neg=is_neg)
     if not Path(save_dir).exists():

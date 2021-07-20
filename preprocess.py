@@ -110,7 +110,7 @@ def make_image(args: MakeImageArgs) -> Tuple[int]:
     return xray.shape
 
 
-def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool = False) -> None:
+def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool = False, cut_1263: bool = True) -> None:
     dst = dst or f'{extn}{size}'
 
     image_id = []
@@ -129,8 +129,12 @@ def make_images(extn: str, size: int, dst: Optional[str] = None, test_only: bool
         print("CREATED:", save_dir)
 
         num = 0
+        total = len(list(Path(const.dir_original_data(path=True) / split).glob('**/*dcm')))
         for dirname, _, filenames in tqdm(os.walk(const.DIR_ORIGINAL_DATA + split)):
             for file in filenames:
+                # Kaggle dummy test set - skip over
+                if total == 1263 and num >= 70:
+                    continue
                 if not file.endswith('.dcm'):
                     continue
                 image_id_i = file[:-len('.dcm')]

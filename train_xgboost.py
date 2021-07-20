@@ -34,10 +34,10 @@ def get_X(keep_study_id: bool = False, is_test: bool = False) -> DataFrame:
 
     preds_csv = "test.csv" if is_test else "valid.csv"
 
-    preds_class = pd.read_csv(const.subdir_preds_class(path=True) / 'resnet18' / preds_csv, index_col=0)
+    preds_class = pd.read_csv(const.subdir_preds_class(path=True) / 'resnet18_224' / preds_csv, index_col=0)
     preds_class = preds_class.rename(columns=lambda c: f"class_{c}")
 
-    preds_neg = pd.read_csv(const.subdir_preds_neg(path=True) / 'resnet18' / preds_csv, index_col=0)
+    preds_neg = pd.read_csv(const.subdir_preds_neg(path=True) / 'resnet18_224' / preds_csv, index_col=0)
     preds_neg = preds_neg[['negative']]  # The second columns is redundant since they sum to 1
     preds_neg = preds_neg.rename(columns=lambda c: f"neg_{c}")
 
@@ -53,7 +53,7 @@ def get_X(keep_study_id: bool = False, is_test: bool = False) -> DataFrame:
     # Unused by xgb
     feats_to_remove = [
         'image_type_DERIVED', 'image_type_100000', 'PhotometricInterpretation_MONOCHROME2', 'part_pecho',
-        'Modality_CR', 'InstanceNumber_3+', 'PatientSex_F', 'image_type_POST_PROCESSED',
+        'Modality_CR', 'InstanceNumber_3+', 'image_type_POST_PROCESSED',
         'SpecificCharacterSet_ISO_IR 192',
     ]
     for feat in feats_to_remove:
@@ -104,6 +104,7 @@ def get_train_valid(tr_vl_split: bool = True, cls: Optional[const.Vocab] = None)
         X_valid=X.loc[vl],
         y_valid=y.loc[vl],
     )
+
 
 
 def get_xgb_folds_OLD(tv: TrainValid, num_folds: int) -> List[Tuple[List[int], List[int]]]:
@@ -233,11 +234,17 @@ def train_bst_folds(tv_folds: List[TrainValid], params_func: Callable, use_map: 
 
 
 def _get_model_dir(use_map: bool) -> Path:
-    subdir = 'class' if use_map else 'neg'
+    subdir = 'study' if use_map else 'image'
     return const.subdir_models_xgb(path=True) / subdir
 
 
+def _get_preds_path(use_map: bool, model_name: str) -> Path:
+    subdir = "study" if use_map else "image"
+    return const.subdir_preds_xgb(path=True) / subdir / model_name / "test.csv"
+
+
 def save_bst_folds(bst_folds: List[Any], use_map: bool, model_name: str) -> None:
+    assert model_name.startswith("xgb"), "Must start with xgb due to dumb logic in predict_final.make_predictions"
     dir = _get_model_dir(use_map=use_map)
     if not dir.exists():
         dir.mkdir()
@@ -245,15 +252,28 @@ def save_bst_folds(bst_folds: List[Any], use_map: bool, model_name: str) -> None
         pickle.dump(bst_folds, f)
 
 
-def predict_bst_folds(use_map: bool, model_name: str) -> np.array:
+def predict_and_save_bst_folds(use_map: bool, model_name: str, pred_neg: bool) -> pd.DataFrame:
     X = get_X(is_test=True)
-    with open(_get_model_dir(use_map=use_map) / model_name, "rb") as f:
+    model_path = _get_model_dir(use_map=use_map) / model_name
+    with open(model_path, "rb") as f:
         bsts = pickle.load(f)
     ret = 0.
     for bst in bsts:
         ret += bst.predict(xgb.DMatrix(X))
-    return ret / len(bsts)
+    ret = ret / len(bsts)
+    if pred_neg:
+        ret_df = pd.DataFrame({'negative': ret, 'positive': (1 - ret)})
+    else:
+        ret_df = pd.DataFrame(ret, columns=const.VOCAB_SHORT)
 
+    out_path = _get_preds_path(use_map=use_map, model_name=model_name)
+    if not out_path.parent.exists():
+        out_path.parent.mkdir(parents=True)
+    ret_df.index = X.index
+    ret_df.index.name = ""
+    ret_df.to_csv(out_path)
+
+    return ret_df
 
 # METRICS #
 

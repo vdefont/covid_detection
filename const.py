@@ -16,10 +16,22 @@ SUBDIR_PREDS_CLASS = "preds_class/"
 SUBDIR_MODELS_NEG = "models_neg/"
 SUBDIR_PREDS_NEG = "preds_neg/"
 SUBDIR_MODELS_XGB = "models_xgb/"
+SUBDIR_PREDS_XGB = "preds_xgb/"
 SUBDIR_MODELS_DETECT = "models_detect/"
 SUBDIR_PREDS_DETECT = "preds_detect/"
 SUBDIR_PREDS_FINAL = "preds_final/"
 SUBDIR_MODELS_KAGGLE = "models_kaggle/"
+
+
+MEAN_STD_STATS = ([0.5219] * 3, [0.2408] * 3)
+
+
+class VocabNeg(Enum):
+    NEG = "negative"
+    POS = "positive"
+
+
+VOCAB_NEG = [VocabNeg.NEG.value, VocabNeg.POS.value]
 
 
 class Vocab(Enum):
@@ -112,6 +124,11 @@ def subdir_preds_neg():
 @maybe_path
 def subdir_models_xgb():
     return DIR_WORKING + SUBDIR_MODELS_XGB
+
+
+@maybe_path
+def subdir_preds_xgb():
+    return DIR_WORKING + SUBDIR_PREDS_XGB
 
 
 @maybe_path

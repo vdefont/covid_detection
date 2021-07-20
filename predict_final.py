@@ -16,7 +16,6 @@ import preprocess
 import make_data_detect
 from make_data_detect import Frame, Box
 import train_detect
-from train_detect import get_box_preds
 
 
 # WEIGHTED BOX FUSION #
@@ -79,7 +78,7 @@ def weighted_box_fusion(
 
     ret = {}
 
-    for id in tqdm.tqdm(ids, desc="Weighted box fusion:"):
+    for id in tqdm.tqdm(ids, desc="Weighted box fusion"):
         boxes_list = [_prep_boxes(preds_i[id], max_coord=max_coord) for preds_i in preds]
         scores_list = [_get_scores(preds_i[id]) for preds_i in preds]
         labels_list = [_get_labels(preds_i[id]) for preds_i in preds]
@@ -106,7 +105,7 @@ def weighted_box_fusion(
 
 def get_fold_preds() -> List[Dict[str, List[Box]]]:
     return [
-        get_box_preds(
+        train_detect.get_box_preds(
             preds_path_detect=const.subdir_preds_detect(path=True) / 'eff_lite0_256',
             new_frame=Frame(256, 256),
             sname=f'fold{i}',
@@ -193,6 +192,15 @@ def inspect(df, skip_box_thr: float = 0.00100, conf_type: str = 'avg'):
     plt.show()
 
 
+def _combine_folds(fold_preds: List[Dict[str, List[Box]]]) -> Dict[str, Box]:
+    return weighted_box_fusion(
+        preds=fold_preds,
+        iou_thr_nms=0.50,
+        iou_thr_wbf=0.60,
+        conf_type='max',
+        skip_box_thr=0.001,
+    )
+
 
 # FETCH const.VOCAB_LONG FROM OUTPUT FILE #
 
@@ -218,6 +226,22 @@ def get_class_preds(preds_path_class: Path, preds_path_neg: Path, sname: str = '
 
 
 # MAKE PREDICTIONS (unformatted) #
+
+
+def get_box_preds_folds(
+        preds_path_detect: Path, new_frame: Frame, sname: str = 'test', debug: bool = False
+) -> Dict[str, List[Box]]:
+    """
+    DEBUG: Compute error
+    """
+    if debug:
+        return train_detect.get_box_preds(preds_path_detect=preds_path_detect, new_frame=new_frame, sname=sname, fold=0)
+
+    fold_preds = [
+        train_detect.get_box_preds(preds_path_detect=preds_path_detect, new_frame=new_frame, sname=sname, fold=fold)
+        for fold in range(5)
+    ]
+    return _combine_folds(fold_preds=fold_preds)
 
 
 def format_class_pred_str(class_idx, conf) -> str:
@@ -331,30 +355,46 @@ IMAGE_PRED_COMBINED_4 = partial(make_image_predictions_combined, none_conf_base=
 
 
 def make_predictions(
-        model_name_class: str,
+        model_name_class_study: str,
+        model_name_class_image: str,
         model_name_neg: str,
         model_name_detect: str,
         study_pred_func: Callable,
         image_pred_func: Callable,
         out_file_suffix: Optional[str] = None,
         sname: str = 'test',
+        debug: bool = False,
 ) -> None:
-    preds_path_class = const.subdir_preds_class(path=True) / model_name_class
-    preds_path_neg = const.subdir_preds_neg(path=True) / model_name_neg
+    # Study predictions (class)
+    if model_name_class_study.startswith("xgb"):
+        preds_path_class_study = const.subdir_preds_xgb(path=True) / "study" / model_name_class_study
+    else:
+        preds_path_class_study = const.subdir_preds_class(path=True) / model_name_class_study
+
+    # Image predictions (class / neg)
+    if model_name_class_image.startswith("xgb"):
+        preds_path_class_image = const.subdir_preds_xgb(path=True) / "image" / model_name_class_image
+        preds_path_neg = const.subdir_preds_xgb(path=True) / "image" / model_name_neg
+    else:
+        preds_path_class_image = const.subdir_preds_class(path=True) / model_name_class_image
+        preds_path_neg = const.subdir_preds_neg(path=True) / model_name_neg
+
     preds_path_detect = const.subdir_preds_detect(path=True) / model_name_detect
 
-    out_name_parts = [model_name_class, model_name_neg, model_name_detect]
+    out_name_parts = [model_name_class_study, model_name_class_image, model_name_neg, model_name_detect]
     if out_file_suffix is not None:
         out_name_parts.append(out_file_suffix)
     out_file = const.subdir_preds_final(path=True) / "__".join(out_name_parts)
 
-    class_preds = get_class_preds(preds_path_class=preds_path_class, preds_path_neg=preds_path_neg, sname=sname)
+    class_preds_study = get_class_preds(preds_path_class=preds_path_class_study, preds_path_neg=preds_path_neg, sname=sname)
+    study_preds = study_pred_func(class_preds=class_preds_study)
+    class_preds_image = get_class_preds(preds_path_class=preds_path_class_image, preds_path_neg=preds_path_neg, sname=sname)
     # Make sure that the frame here is whatever size is used by EfficientDet! That is the size at which it makes
     # its predictions
-    box_preds = get_box_preds(preds_path_detect=preds_path_detect, new_frame=Frame(256, 256), sname=sname)
+    box_preds = get_box_preds_folds(preds_path_detect=preds_path_detect, new_frame=Frame(256, 256), sname=sname, debug=debug)
+    # ^ I spliced in this stuff here to get fast feedback on above code
+    image_preds = image_pred_func(class_preds=class_preds_image, box_preds=box_preds)
 
-    study_preds = study_pred_func(class_preds=class_preds)
-    image_preds = image_pred_func(class_preds=class_preds, box_preds=box_preds)
 
     preds = pd.concat([study_preds, image_preds])
     preds.to_csv(f"{out_file}.csv", index=False)
@@ -362,10 +402,21 @@ def make_predictions(
 
 def test():
     make_predictions(
-        model_name_class="resnet18",
+        model_name_class_study="resnet18",
+        model_name_class_image="resnet18",
         model_name_neg="resnet18",
         model_name_detect="eff_lite0_256",
         study_pred_func=STUDY_PRED_SOFT,
         image_pred_func=IMAGE_PRED_COMBINED_2_4,
         sname='valid',
+    )
+
+    make_predictions(
+        model_name_class_study="xgb_5fold",
+        model_name_class_image="xgb_5fold_class",
+        model_name_neg="xgb_5fold_neg",
+        model_name_detect="eff_lite0_256",
+        study_pred_func=STUDY_PRED_SOFT,
+        image_pred_func=IMAGE_PRED_COMBINED_2_4,
+        sname='test',
     )

@@ -303,9 +303,10 @@ def get_learner(
         learn.unfreeze()
     else:
         load_dir = const.subdir_models_detect(path=True)
-        load_path = load_dir/f"{model_name}_5fold"/f"fold{load_model_fold}"
+        load_path = load_dir/f"{model_name}"/f"fold{load_model_fold}"
         print(f"LOAD PATH: {load_path}")
-        learn.model.load_state_dict(torch.load(load_path))
+        map_location = None if torch.cuda.is_available() else torch.device("cpu")
+        learn.model.load_state_dict(torch.load(load_path, map_location=map_location))
 
     config = dict(learn.model.config)
     config['act_type'] = 'silu'
@@ -331,10 +332,10 @@ def save_learn_folds(learn_folds: List[Any], model_name: str) -> None:
 
 def _get_preds(model_type, model, infer_ds):
     infer_dl = model_type.infer_dl(infer_ds, batch_size=8, shuffle=False)
-    return model_type.predict_from_dl(model=model, infer_dl=infer_dl, keep_images=True, detection_threshold=0.)
+    return model_type.predict_from_dl(model=model, infer_dl=infer_dl, keep_images=False, detection_threshold=0.)
 
 
-def predict_and_save(box_dir: str, image_size: int, model_name: str, model, fold: int) -> Any:
+def predict_and_save(box_dir: str, image_size: int, model_name: str, model: Any, fold: int, dummy: bool = False) -> Any:
     """
     Assumes that we are predicting the test set
 
@@ -348,9 +349,12 @@ def predict_and_save(box_dir: str, image_size: int, model_name: str, model, fold
 
     infer_ds = get_ds_valid(box_dir=box_dir, image_size=image_size, sname="test")
     ids = [r.as_dict()['common']['filepath'].name[:-len('.png')] for r in infer_ds.records]
-    cur_preds = _get_preds(model_type=model_type, model=model, infer_ds=infer_ds)
-    cur_preds = [pred.pred.as_dict()['detection'] for pred in cur_preds]
-    cur_preds = dict(zip(ids, cur_preds))
+    if dummy:
+        cur_preds = "dummy"
+    else:
+        cur_preds = _get_preds(model_type=model_type, model=model, infer_ds=infer_ds)
+        cur_preds = [pred.pred.as_dict()['detection'] for pred in cur_preds]
+        cur_preds = dict(zip(ids, cur_preds))
     with open(save_dir/f"fold{fold}", 'wb') as f:
         pickle.dump(cur_preds, f)
 
@@ -389,13 +393,14 @@ def _non_max_suppression(boxes: List[Box], thresh: float) -> List[Box]:
 
 
 def get_box_preds(
-        preds_path_detect: Path, new_frame: Frame, sname: str = 'test', nms: Optional[float] = None
+        preds_path_detect: Path, new_frame: Frame, sname: str = 'test', fold: Optional[int] = None
 ) -> Dict[str, List[Box]]:
     """
     Returns: id -> boxes
     """
 
-    with open(preds_path_detect/sname, 'rb') as f:
+    preds_name = sname if fold is None else f"fold{fold}"
+    with open(preds_path_detect/preds_name, 'rb') as f:
         preds = pickle.load(f)
 
     boxes_ls = [p['bboxes'] for p in preds.values()]
@@ -405,11 +410,6 @@ def get_box_preds(
         for id, boxes, scores in zip(preds, boxes_ls, scores_ls)
     }
     ret = unscale_boxes(new_frame=new_frame, boxes=ret, sname=sname)
-
-    # Optionall apply non-max suppression
-    if nms is not None:
-        for id, boxes in tqdm.tqdm(ret.items(), desc="Non-max suppression"):
-            ret[id] = _non_max_suppression(boxes=boxes, thresh=nms)
 
     return ret
 
@@ -426,12 +426,12 @@ def test_non_max_suppression() -> None:
         print(box)
 
 
-def test_preds_map(sname: str = 'valid', nms: bool = False) -> None:
+def test_preds_map(sname: str = 'valid') -> None:
     with open(const.subdir_data_detect(path=True)/'png224_boxes'/sname, "rb") as f:
         id_to_actuals = pickle.load(f)
-    id_to_actuals = unscale_boxes(new_frame=Frame(224, 224), boxes=id_to_actuals, sname=sname)
+    id_to_actuals = unscale_boxes(new_frame=Frame(256, 256), boxes=id_to_actuals, sname=sname)
     id_to_preds = get_box_preds(
-        const.subdir_preds_detect(path=True) / 'eff_lite0_256', new_frame=Frame(W=256, H=256), sname=sname, nms=nms
+        const.subdir_preds_detect(path=True) / 'eff_lite0_256', new_frame=Frame(W=256, H=256), sname=sname
     )
 
     assert id_to_actuals.keys() == id_to_preds.keys()

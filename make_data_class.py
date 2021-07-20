@@ -8,6 +8,7 @@ import random
 from collections import defaultdict
 import numpy as np
 import itertools
+import pickle
 
 import const
 
@@ -15,11 +16,17 @@ import const
 def _setup_data() -> DataFrame:
     img_data = pd.read_csv(const.DIR_ORIGINAL_DATA + "train_image_level.csv")
     img_data = img_data.rename(columns={'id': 'img_id', 'StudyInstanceUID': 'study_id'})
-    img_data.img_id = img_data.img_id.str[:-6]
+    img_data.img_id = img_data.img_id.str[:-len("_image")]
+
+    # Remove dups
+    with open("data_original/dups", "rb") as f:
+        dups = pickle.load(f)
+    img_data = img_data[~img_data.img_id.isin(dups)]
+
 
     study_data = pd.read_csv(const.DIR_ORIGINAL_DATA + "train_study_level.csv")
     study_data = study_data.rename(columns={'id': 'study_id'})
-    study_data.study_id = study_data.study_id.str[:-6]
+    study_data.study_id = study_data.study_id.str[:-len("_study")]
     study_data.columns = ["study_id"] + const.VOCAB_SHORT
 
     data = img_data.merge(study_data, on='study_id')[['img_id', 'study_id']+const.VOCAB_SHORT]
@@ -40,7 +47,7 @@ def get_folds(data: Optional[DataFrame] = None, num_folds: int = 5, boxes: bool 
 
     If boxes is True, we only consider images where there are boxes
     """
-    data = data or _setup_data()
+    data = _setup_data() if data is None else data
 
     if boxes is True:
         image_data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
@@ -233,6 +240,14 @@ def create_and_validate_data_mf(src: str, test_only: bool = False) -> None:
 
 
 # create_and_validate_data_folds(src="png224", dst="png224_3fold", num_folds=3)
+# create_and_validate_data_folds(src="jpg224", dst="jpg224_3fold", num_folds=3, extn="jpg")
+# create_and_validate_data_folds(src="jpg768", dst="jpg768_5fold", num_folds=5, extn="jpg")
+# create_and_validate_data_folds(src="jpg768", dst="jpg768_3fold", num_folds=3, extn="jpg")
+# create_and_validate_data_folds(src="jpg640", dst="jpg640_3fold", num_folds=3, extn="jpg")
+# create_and_validate_data_folds(src="jpg640", dst="jpg640_5fold", num_folds=5, extn="jpg")
+# create_and_validate_data_folds(src="jpg1024", dst="jpg1024_3fold", num_folds=3, extn="jpg")
+# create_and_validate_data_folds(src="png512", dst="png512_5fold", num_folds=5, extn="png")
+# create_and_validate_data_folds(src="png512", dst="png512_3fold", num_folds=3, extn="png")
 # create_and_validate_data_folds(src="png224", dst="png224_5fold", num_folds=5)
 # create_and_validate_data_folds(src="png224", dst="png224_10fold", num_folds=10)
 # create_and_validate_data(src="png224", extn="png", dst="png224", valid_amt=0.3)
