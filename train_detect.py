@@ -14,6 +14,8 @@ from make_data_detect import Box, Frame, unscale_bbox_ls
 import math
 import pandas as pd
 import tqdm
+import re
+import functools
 
 import const
 
@@ -81,22 +83,98 @@ def get_dl_train_valid(train_ds, valid_ds, model_name, batch_size):
 
 def _get_model_eff(backbone, image_size):
     return models.ross.efficientdet.model(
-        backbone=backbone(pretrained=True),
+        backbone=backbone,
         num_classes=2,  # opacity, background (unused)
         img_size=image_size,
     )
 
 
-def _get_model(name: str):
-    if name == "eff_lite0_256":
-        return _get_model_eff(backbone=models.ross.efficientdet.tf_lite0, image_size=256)
-    if name == "eff_d0_256":
-        return _get_model_eff(backbone=models.ross.efficientdet.d0, image_size=256)
-    raise Exception(f"No model called {name}")
+def _get_model_yolo(backbone, image_size):
+    return models.ultralytics.yolov5.model(
+        backbone=backbone,
+        num_classes=2,  # opacity, background (unused)
+        img_size=image_size,
+    )
 
 
-def make_base_models():
-    base_models = {n: _get_model(n) for n in ["eff_lite0_256"]}
+def _get_model_resnet(backbone, image_size):
+    return models.torchvision.retinanet.model(
+        backbone=backbone,
+        num_classes=2,  # opacity, background (unused)
+        min_size=image_size,
+        max_size=image_size,
+        score_thresh=0.001,
+    )
+
+
+ROSS_SHORT_TO_LONG = {}
+for i in range(5):
+    ROSS_SHORT_TO_LONG[f"eff_lite{i}"] = f"tf_efficientdet_lite{i}"
+for i in range(8):
+    ROSS_SHORT_TO_LONG[f"eff_tf{i}"] = f"tf_efficientdet_d{i}"
+    ROSS_SHORT_TO_LONG[f"eff_d{i}"] = f"efficientdet_d{i}"
+for i in range(6):
+    ROSS_SHORT_TO_LONG[f"eff_ap{i}"] = f"tf_efficientdet_d{i}_ap"
+
+
+EFFDET_IMG_SIZES = {
+    0: 512, 1: 640, 2: 768, 3: 896, 4: 1024, 5: 1280, 6: 1280, 7: 1536
+}
+
+
+def _recommended_size(model_name: str) -> int:
+    idx = int(re.search(r'(\d)', model_name)[1])
+    return EFFDET_IMG_SIZES[idx]
+
+
+def _get_model(name: str, pretrained: bool = True):
+    """
+    Name can look like "eff_lite0" or "eff_lite0_256"
+    ...or "yolo5s_256"
+    ...or "retinanet
+    """
+    image_size = None
+
+    # Handle "lite0_256" case
+    re_suffix = re.search(r'_(\d*)$', name)
+    if re_suffix is not None:
+        image_size = int(re_suffix[1])
+        name = name[:-len(re_suffix[0])]
+
+    if name.startswith("eff_"):
+        full_name = ROSS_SHORT_TO_LONG[name]
+        backbone = models.ross.efficientdet.utils.EfficientDetBackboneConfig(full_name)(pretrained=pretrained)
+        image_size = image_size or _recommended_size(model_name=full_name)
+        return _get_model_eff(backbone=backbone, image_size=image_size)
+
+    if name.startswith("yolo"):
+        # Options:
+        #  yolov5s  yolov5m  yolov5l
+        #  yolov5s6 yolov5m6 yolov5l6
+        backbone = models.ultralytics.yolov5.utils.YoloV5BackboneConfig(model_name=name)(pretrained=pretrained)
+        assert image_size is not None
+        return _get_model_yolo(backbone=backbone, image_size=image_size)
+
+    if name.startswith("resnet"):
+        """
+        Options:
+        resnet18_fpn - 18, 34, 50, 101, 152
+        resnext50_32x4d_fpn
+        resnext101_32x8d_fpn
+        wide_resnet50_2_fpn
+        wide_resnet101_2_fpn
+        """
+        backbone_fn = functools.partial(backbones._resnet_fpn, name=name, pretrained=pretrained)
+        backbone = models.torchvision.retinanet.backbones.resnet_fpn.RetinanetTorchvisionBackboneConfig(backbone_fn)
+        assert image_size is not None
+
+
+    raise Exception(f"Name {name} not recognized!")
+
+
+def make_base_models(base_models: Iterable[str]):
+    # Ex: base_models=["eff_lite0_256"]
+    base_models = {n: _get_model(n) for n in base_models}
     for name, model in base_models.items():
         path = const.dir_base_models(path=True)/'detect'/name
         if not path.parent.exists():
@@ -112,6 +190,12 @@ def _load_model(model_name: str) -> nn.Module:
     # This wack stuff is necessary for pickle.load to work
     DetBenchTrain.param_groups_fn = param_groups_fn
 
+    # Sometimes the model name is formatted like resnet18_s224
+    # We want to strip that end part
+    match = re.match(r'(.*)_s\d*$', model_name)
+    if match:
+        model_name = match[1]
+
     path = const.dir_base_models(path=True)/'detect'/model_name
     with open(path, 'rb') as f:
         return pickle.load(f)
@@ -120,6 +204,10 @@ def _load_model(model_name: str) -> nn.Module:
 def model_name_to_type(name):
     if name.startswith("eff"):
         return models.ross.efficientdet
+    if name.startswith("yolo"):
+        return models.ultralytics.yolov5
+    if name.startswith("resnet"):
+        return models.torchvision.retinanet
     raise Exception("Could not find model type!")
 
 
@@ -308,9 +396,10 @@ def get_learner(
         map_location = None if torch.cuda.is_available() else torch.device("cpu")
         learn.model.load_state_dict(torch.load(load_path, map_location=map_location))
 
-    config = dict(learn.model.config)
-    config['act_type'] = 'silu'
-    model.config = config
+    if model_name.startswith("eff"):
+        config = dict(learn.model.config)
+        config['act_type'] = 'silu'
+        model.config = config
 
     return learn
 
@@ -331,11 +420,12 @@ def save_learn_folds(learn_folds: List[Any], model_name: str) -> None:
 # INFERENCE #
 
 def _get_preds(model_type, model, infer_ds):
-    infer_dl = model_type.infer_dl(infer_ds, batch_size=8, shuffle=False)
+    # batch size = 1 to not overload kaggle's gpu (?)
+    infer_dl = model_type.infer_dl(infer_ds, batch_size=1, shuffle=False)
     return model_type.predict_from_dl(model=model, infer_dl=infer_dl, keep_images=False, detection_threshold=0.)
 
 
-def predict_and_save(box_dir: str, image_size: int, model_name: str, model: Any, fold: int, dummy: bool = False) -> Any:
+def predict_and_save(box_dir: str, image_size: int, model_name: str, model: Any, fold: int, dummy: bool = False, is_test: bool = True) -> Any:
     """
     Assumes that we are predicting the test set
 
@@ -347,7 +437,7 @@ def predict_and_save(box_dir: str, image_size: int, model_name: str, model: Any,
     if not save_dir.exists():
         save_dir.mkdir()
 
-    infer_ds = get_ds_valid(box_dir=box_dir, image_size=image_size, sname="test")
+    infer_ds = get_ds_valid(box_dir=box_dir, image_size=image_size, sname="test" if is_test else f"fold{fold}")
     ids = [r.as_dict()['common']['filepath'].name[:-len('.png')] for r in infer_ds.records]
     if dummy:
         cur_preds = "dummy"
@@ -376,6 +466,7 @@ def unscale_boxes(new_frame: Frame, boxes: Dict[str, List[Box]], sname: str) -> 
         id: unscale_bbox_ls(frame=new_frame, new_frame=id_to_frame[id], boxes=bs)
         for id, bs in tqdm.tqdm(boxes.items(), desc="Unscaling boxes")
     }
+
 
 def _non_max_suppression(boxes: List[Box], thresh: float) -> List[Box]:
     """

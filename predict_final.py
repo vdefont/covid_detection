@@ -100,16 +100,57 @@ def weighted_box_fusion(
     return ret
 
 
+# ENSEMBLING #
+
+
+def ens_get_valid_all() -> Dict[str, List[Box]]:
+    ids = [p.name.replace(".jpg", "") for p in (const.subdir_data_detect(True) / "jpg640_3fold").glob('**/*jpg')]
+
+    data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
+    id_to_boxes_raw = dict(zip(data.id, data.boxes))
+
+    ret = {}
+    for id in ids:
+        boxes_raw = id_to_boxes_raw[id]
+        boxes_json = json.loads(boxes_raw)
+        ret[id] = [Box(X=e['x'], Y=e['y'], W=e['width'], H=e['height']) for e in boxes_json]
+    return ret
+
+
+def ens_get_preds(model: str, size: int) -> Dict[str, List[Box]]:
+    preds = _get_fold_preds(model=model, size=size)
+    ret = {}
+    for preds_i in preds:
+        ret.update(preds_i)
+    return ret
+
+
+def eval_single_model(model: str, size: int) -> float:
+    preds = ens_get_preds(model=model, size=size)
+    actuals = ens_get_valid_all()
+    return get_map(preds=preds, actuals=actuals)
+
+
+def test_fusion():
+    va = ens_get_valid_all()
+
+    p640 = ens_get_preds("eff_ap4_640", 640)
+    p768 = ens_get_preds("eff_ap4_768", 768)
+    combined = weighted_box_fusion(preds=[p640, p768], iou_thr_nms=None, iou_thr_wbf=0.4, conf_type='max', skip_box_thr=0.001)
+
+    return get_map(preds=combined, actuals=va)
+
+
+
 # COMPARING DIFFERENT METHODS FOR COMBINING PREDICTIONS #
 
 
-def get_fold_preds() -> List[Dict[str, List[Box]]]:
+def _get_fold_preds(model: str = "eff_lite0_256", size: int = 256) -> List[Dict[str, List[Box]]]:
     return [
         train_detect.get_box_preds(
-            preds_path_detect=const.subdir_preds_detect(path=True) / 'eff_lite0_256',
-            new_frame=Frame(256, 256),
+            preds_path_detect=const.subdir_preds_detect(path=True) / model,
+            new_frame=Frame(size, size),
             sname=f'fold{i}',
-            nms=None,
         )
         for i in range(5)
     ]
@@ -136,11 +177,11 @@ def get_map(preds: Dict[str, List[Box]], actuals: Dict[str, List[Box]]) -> float
     return train_detect.mean_average_precision(actuals_preds_ls=actuals_preds_ls)
 
 
-def grid_search() -> pd.DataFrame:
+def _grid_search() -> pd.DataFrame:
     """
     Pickle saved: combine_folds_grid_search_df (combining 5 folds of eff_lite0_256)
     """
-    preds = get_fold_preds()
+    preds = _get_fold_preds()
     actuals = get_valid_boxes()
 
     keys = ['skip_box_thr', 'conf_type', 'iou_thr_nms', 'iou_thr_wbf']
@@ -231,12 +272,6 @@ def get_class_preds(preds_path_class: Path, preds_path_neg: Path, sname: str = '
 def get_box_preds_folds(
         preds_path_detect: Path, new_frame: Frame, sname: str = 'test', debug: bool = False
 ) -> Dict[str, List[Box]]:
-    """
-    DEBUG: Compute error
-    """
-    if debug:
-        return train_detect.get_box_preds(preds_path_detect=preds_path_detect, new_frame=new_frame, sname=sname, fold=0)
-
     fold_preds = [
         train_detect.get_box_preds(preds_path_detect=preds_path_detect, new_frame=new_frame, sname=sname, fold=fold)
         for fold in range(5)
@@ -367,14 +402,14 @@ def make_predictions(
 ) -> None:
     # Study predictions (class)
     if model_name_class_study.startswith("xgb"):
-        preds_path_class_study = const.subdir_preds_xgb(path=True) / "study" / model_name_class_study
+        preds_path_class_study = const.subdir_preds_xgb(path=True) / model_name_class_study
     else:
         preds_path_class_study = const.subdir_preds_class(path=True) / model_name_class_study
 
     # Image predictions (class / neg)
     if model_name_class_image.startswith("xgb"):
-        preds_path_class_image = const.subdir_preds_xgb(path=True) / "image" / model_name_class_image
-        preds_path_neg = const.subdir_preds_xgb(path=True) / "image" / model_name_neg
+        preds_path_class_image = const.subdir_preds_xgb(path=True) / model_name_class_image
+        preds_path_neg = const.subdir_preds_xgb(path=True) / model_name_neg
     else:
         preds_path_class_image = const.subdir_preds_class(path=True) / model_name_class_image
         preds_path_neg = const.subdir_preds_neg(path=True) / model_name_neg
@@ -391,7 +426,9 @@ def make_predictions(
     class_preds_image = get_class_preds(preds_path_class=preds_path_class_image, preds_path_neg=preds_path_neg, sname=sname)
     # Make sure that the frame here is whatever size is used by EfficientDet! That is the size at which it makes
     # its predictions
-    box_preds = get_box_preds_folds(preds_path_detect=preds_path_detect, new_frame=Frame(256, 256), sname=sname, debug=debug)
+    box_img_size = int(re.search(r'\d*$', model_name_detect)[0])
+    new_frame = Frame(box_img_size, box_img_size)
+    box_preds = get_box_preds_folds(preds_path_detect=preds_path_detect, new_frame=new_frame, sname=sname, debug=debug)
     # ^ I spliced in this stuff here to get fast feedback on above code
     image_preds = image_pred_func(class_preds=class_preds_image, box_preds=box_preds)
 

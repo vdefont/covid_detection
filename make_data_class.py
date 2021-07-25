@@ -37,7 +37,12 @@ def _setup_data() -> DataFrame:
     return data
 
 
-def get_folds(data: Optional[DataFrame] = None, num_folds: int = 5, boxes: bool = False) -> List[Set[str]]:
+def get_folds(
+        data: Optional[DataFrame] = None,
+        num_folds: int = 5,
+        boxes: bool = False,
+        seed: int = 42,
+) -> List[Set[str]]:
     """
     Strategy:
     - Group images by study_id, and bucket these groups by label
@@ -54,7 +59,7 @@ def get_folds(data: Optional[DataFrame] = None, num_folds: int = 5, boxes: bool 
         ids_with_boxes = image_data.id[~image_data.boxes.isna()]
         data = data[data.img_id.isin(ids_with_boxes)]
 
-    random.seed(42)
+    random.seed(seed)
     lab_to_gps = defaultdict(list)
     for name, group in data.groupby(['label', 'study_id']):
         lab_to_gps[name[0]].append(group)

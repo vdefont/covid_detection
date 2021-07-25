@@ -3,7 +3,7 @@ import pandas as pd
 from pandas import DataFrame
 import numpy as np
 import  itertools
-from typing import Any, Tuple, Optional, List, Dict, NamedTuple, Callable
+from typing import Any, Tuple, Optional, List, Dict, NamedTuple, Callable, Iterable
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -29,19 +29,49 @@ class TrainValid(NamedTuple):
     y_valid: Optional[DataFrame] = None
 
 
-def get_X(keep_study_id: bool = False, is_test: bool = False) -> DataFrame:
+class ClassNegPreds(NamedTuple):
+    class_preds: DataFrame
+    neg_preds: DataFrame
+
+
+def _get_model_preds(model_name: str, is_test: bool, single: bool) -> List[ClassNegPreds]:
+    """
+    'single': Return just the single df corresponding to avg preds
+    'all': Return list of dfs, one per fold
+    """
+    class_path = const.subdir_preds_class(path=True) / model_name / ("test" if is_test else "valid")
+    neg_path = const.subdir_preds_neg(path=True) / model_name / ("test" if is_test else "valid")
+    class_base = str(class_path)
+    neg_base = str(neg_path)
+
+    if single:
+        class_preds = [pd.read_csv(f"{class_base}.csv", index_col=0)]
+        neg_preds = [pd.read_csv(f"{neg_base}.csv", index_col=0)]
+    else:
+        with open(f"{class_base}_all", "rb") as f:
+            class_preds = pickle.load(f)
+        with open(f"{neg_base}_all", "rb") as f:
+            neg_preds = pickle.load(f)
+
+    # Clean the dataframes
+    for i, class_preds_i in enumerate(class_preds):
+        class_preds[i] = class_preds_i.rename(columns=lambda c: f"{model_name}_class_{c}")
+    for i, neg_preds_i in enumerate(neg_preds):
+        neg_preds_i = neg_preds_i[['negative']]  # The second columns is redundant since they sum to 1
+        neg_preds[i] = neg_preds_i.rename(columns=lambda c: f"{model_name}_neg_{c}")
+
+    return [
+        ClassNegPreds(class_preds=class_preds_i, neg_preds=neg_preds_i)
+        for class_preds_i, neg_preds_i in zip(class_preds, neg_preds)
+    ]
+
+
+def get_X(model_preds: Dict[str, ClassNegPreds], keep_study_id: bool = False, is_test: bool = False) -> DataFrame:
     # Add NN feats
-
-    preds_csv = "test.csv" if is_test else "valid.csv"
-
-    preds_class = pd.read_csv(const.subdir_preds_class(path=True) / 'resnet18_224' / preds_csv, index_col=0)
-    preds_class = preds_class.rename(columns=lambda c: f"class_{c}")
-
-    preds_neg = pd.read_csv(const.subdir_preds_neg(path=True) / 'resnet18_224' / preds_csv, index_col=0)
-    preds_neg = preds_neg[['negative']]  # The second columns is redundant since they sum to 1
-    preds_neg = preds_neg.rename(columns=lambda c: f"neg_{c}")
-
-    preds = pd.concat([preds_class, preds_neg], axis=1)
+    preds_parts = []
+    for model_name, preds in model_preds.items():
+        preds_parts.append(pd.concat([preds.class_preds, preds.neg_preds], axis=1))
+    preds = pd.concat(preds_parts, axis=1)
 
     # Add meta feats
 
@@ -66,8 +96,14 @@ def get_X(keep_study_id: bool = False, is_test: bool = False) -> DataFrame:
     return X
 
 
-def get_train_valid(tr_vl_split: bool = True, cls: Optional[const.Vocab] = None) -> TrainValid:
-    X = get_X(keep_study_id=True)
+def get_train_valid(model_names: Iterable[str], tr_vl_split: bool = True, cls: Optional[const.Vocab] = None) -> TrainValid:
+    model_preds = {}
+    for model_name in model_names:
+        model_preds_raw = _get_model_preds(model_name=model_name, is_test=False, single=True)
+        assert len(model_preds_raw) == 1
+        model_preds[model_name] = model_preds_raw[0]
+
+    X = get_X(model_preds=model_preds, keep_study_id=True)
 
     # Get labels
 
@@ -120,11 +156,12 @@ def get_xgb_folds_OLD(tv: TrainValid, num_folds: int) -> List[Tuple[List[int], L
     return ret
 
 
-def get_train_valid_folds(num_folds: int, cls: Optional[const.Vocab]) -> List[TrainValid]:
-    tv = get_train_valid(tr_vl_split=False, cls=cls)
+def get_train_valid_folds(model_names: Iterable[str], num_folds: int, cls: Optional[const.Vocab]) -> List[TrainValid]:
+    model_names = sorted(model_names)  # Aids reproducibility
+    tv = get_train_valid(model_names=model_names, tr_vl_split=False, cls=cls)
     assert tv.X_valid is None and tv.y_valid is None, "shouldn't have valid data when making folds"
 
-    folds = [list(fold) for fold in make_data_class.get_folds(num_folds=num_folds)]
+    folds = [list(fold) for fold in make_data_class.get_folds(num_folds=num_folds, seed=47)]
     ret = []
     for i, vl in enumerate(folds):
         fold_is = np.delete(np.arange(num_folds), i)
@@ -142,7 +179,22 @@ def get_train_valid_folds(num_folds: int, cls: Optional[const.Vocab]) -> List[Tr
 # MODEL #
 
 
-def params_class():
+def params_4class():
+    lr = 0.003
+    max_depth = 3
+    l1_reg = 0.5
+    l2_reg = 0.5
+    subsample = 0.1 # Regularize (1. is nothing)
+    colsample_bytree = 0.75
+    colsample_bylevel = 1.
+
+    return {
+        'max_depth': max_depth, 'eta': lr, 'alpha': l1_reg, 'subsample': subsample,
+        'lambda': l2_reg, "colsample_bytree": colsample_bytree, "colsample_bylevel": colsample_bylevel,
+    }
+
+
+def params_2class():
     lr = 0.003
     max_depth = 4
     l1_reg = 0.5
@@ -157,41 +209,11 @@ def params_class():
     }
 
 
-def params_neg():
-    lr = 0.003
-    max_depth = 4
-    l1_reg = 0.5
-    l2_reg = 0.5
-    subsample = 0.1 # Regularize (1. is nothing)
-    colsample_bytree = 0.75
-    colsample_bylevel = 1.
-
-    return {
-        'max_depth': max_depth, 'eta': lr, 'alpha': l1_reg, 'subsample': subsample,
-        'lambda': l2_reg, "colsample_bytree": colsample_bytree, "colsample_bylevel": colsample_bylevel,
-    }
-
-
-def params_neg_class():
-    lr = 0.02
-    max_depth = 4
-    l1_reg = 0.5
-    l2_reg = 0.5
-    subsample = 0.1 # Regularize (1. is nothing)
-    colsample_bytree = 0.75
-    colsample_bylevel = 1.
-
-    return {
-        'max_depth': max_depth, 'eta': lr, 'alpha': l1_reg, 'subsample': subsample,
-        'lambda': l2_reg, "colsample_bytree": colsample_bytree, "colsample_bylevel": colsample_bylevel,
-    }
-
-
-def train_bst(tv: TrainValid, params_func: Callable, use_map: bool = True) -> Any:
+def train_bst(tv: TrainValid, params_func: Callable) -> Any:
     params = params_func()
 
-    num_rounds = 1000
-    early_stop = 10
+    num_rounds = 10_000
+    early_stop = 30
 
     if tv.is_binary:
         params['objective'] = 'binary:logistic'
@@ -206,10 +228,6 @@ def train_bst(tv: TrainValid, params_func: Callable, use_map: bool = True) -> An
     dvalid = xgb.DMatrix(tv.X_valid, tv.y_valid)
     evals = [(dtrain, 'train'), (dvalid, 'valid')]
 
-    feval = None
-    if use_map:
-        feval = eval_map_binary if tv.is_binary else eval_map
-
     bst = xgb.train(
         # Base
         params=params,
@@ -218,62 +236,78 @@ def train_bst(tv: TrainValid, params_func: Callable, use_map: bool = True) -> An
         early_stopping_rounds=early_stop,
         # Extra
         evals=evals,
-        feval=feval,
-        maximize=feval and True,
     )
 
     return bst
 
 
-def train_bst_folds(tv_folds: List[TrainValid], params_func: Callable, use_map: bool = True) -> List[Any]:
-    bsts = [train_bst(tv, params_func=params_func, use_map=use_map) for tv in tv_folds]
+def train_bst_folds(tv_folds: List[TrainValid], params_func: Callable) -> List[Any]:
+    bsts = [train_bst(tv, params_func=params_func) for tv in tv_folds]
     print(f"Per fold")
-    accs = [bst_acc(tv=tv, bst=bst, use_map=use_map) for tv, bst in zip(tv_folds, bsts)]
+    accs = [bst_acc(tv=tv, bst=bst, use_map=True) for tv, bst in zip(tv_folds, bsts)]
     print(f"Overall: {np.mean(accs)}")
     return bsts
 
 
-def _get_model_dir(use_map: bool) -> Path:
-    subdir = 'study' if use_map else 'image'
-    return const.subdir_models_xgb(path=True) / subdir
+def _get_preds_path(model_name: str) -> Path:
+    return const.subdir_preds_xgb(path=True) / model_name / "test.csv"
 
 
-def _get_preds_path(use_map: bool, model_name: str) -> Path:
-    subdir = "study" if use_map else "image"
-    return const.subdir_preds_xgb(path=True) / subdir / model_name / "test.csv"
-
-
-def save_bst_folds(bst_folds: List[Any], use_map: bool, model_name: str) -> None:
+def save_bst_folds(bst_folds: List[Any], model_name: str) -> None:
     assert model_name.startswith("xgb"), "Must start with xgb due to dumb logic in predict_final.make_predictions"
-    dir = _get_model_dir(use_map=use_map)
+    dir = const.subdir_models_xgb(path=True)
     if not dir.exists():
         dir.mkdir()
     with open(dir / model_name, "wb") as f:
         pickle.dump(bst_folds, f)
 
 
-def predict_and_save_bst_folds(use_map: bool, model_name: str, pred_neg: bool) -> pd.DataFrame:
-    X = get_X(is_test=True)
-    model_path = _get_model_dir(use_map=use_map) / model_name
+def predict_and_save_bst_folds(
+        model_name: str,
+        src_model_names: Iterable[str],
+        pred_neg: bool,
+        is_test: bool = True,
+        all_fold_combos: bool = True,
+) -> pd.DataFrame:
+    acc = None
+    count = 0
+
+    model_path = const.subdir_models_xgb(path=True) / model_name
     with open(model_path, "rb") as f:
         bsts = pickle.load(f)
-    ret = 0.
-    for bst in bsts:
-        ret += bst.predict(xgb.DMatrix(X))
-    ret = ret / len(bsts)
-    if pred_neg:
-        ret_df = pd.DataFrame({'negative': ret, 'positive': (1 - ret)})
-    else:
-        ret_df = pd.DataFrame(ret, columns=const.VOCAB_SHORT)
 
-    out_path = _get_preds_path(use_map=use_map, model_name=model_name)
+    preds_per_model = [
+        _get_model_preds(model_name=src_model_name, is_test=is_test, single=not all_fold_combos)
+        for src_model_name in src_model_names
+    ]
+
+    for preds in itertools.product(*preds_per_model):
+        model_preds = dict(zip(src_model_names, preds))
+        X = get_X(model_preds=model_preds, is_test=is_test)
+
+        ret = 0.
+        for bst in bsts:
+            ret += bst.predict(xgb.DMatrix(X))
+        ret = ret / len(bsts)
+
+        if pred_neg:
+            ret_df = pd.DataFrame({'negative': ret, 'positive': (1 - ret)})
+        else:
+            ret_df = pd.DataFrame(ret, columns=const.VOCAB_SHORT)
+
+        acc = ret_df if acc is None else acc + ret_df
+        count += 1
+
+    ret = acc / count
+
+    out_path = _get_preds_path(model_name=model_name)
     if not out_path.parent.exists():
         out_path.parent.mkdir(parents=True)
-    ret_df.index = X.index
-    ret_df.index.name = ""
-    ret_df.to_csv(out_path)
+    ret.index = X.index
+    ret.index.name = ""
+    ret.to_csv(out_path)
+    return ret
 
-    return ret_df
 
 # METRICS #
 
@@ -330,7 +364,7 @@ Experimental results indicate that:
 
 def eval_one(tv):
     bst = train_bst(tv)
-    bst_acc(tv, bst)
+    bst_acc(tv, bst, use_map=True)
 
 
 def eval_multi(tv_neg, tv_typ, tv_ind, tv_atyp):

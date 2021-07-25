@@ -8,6 +8,8 @@ from pathlib import Path
 import tqdm
 from PIL import Image
 import timm
+import re
+import functools
 
 import const
 
@@ -15,8 +17,11 @@ import const
 # DATA #
 
 
-def get_y_neg(path: Path) -> str:
-    return const.VocabNeg.NEG.value if path.parent.name == const.Vocab.NEG.value else const.VocabNeg.POS.value
+def get_y_neg(neg_cls: const.Vocab, path: Path) -> str:
+    if neg_cls == const.Vocab.NEG:
+        return const.VocabNeg.NEG.value if path.parent.name == const.Vocab.NEG.value else const.VocabNeg.POS.value
+    cls_str = neg_cls.value
+    return cls_str if path.parent.name == cls_str else f"not_{cls_str}"
 
 
 class AlbumentationsTransform(Transform):
@@ -54,12 +59,14 @@ def get_dls(
         image_path: str,
         img_size: int,
         is_neg: bool,
+        neg_cls: const.Vocab = const.Vocab.NEG,
         presize_amt: float = 1,
         fold_valid: Optional[int] = None,
         test_only: bool = False,
         batch_size: int = 32,
         flip_p: float = 0.5,
         normalize_stats: Optional[Any] = None,
+        get_items=get_image_files,
 ) -> DataLoaders:
     """
     NOTE: This does not work on my machine for some reason, but it works on vastai and kaggle (I think)
@@ -67,8 +74,8 @@ def get_dls(
     orig_img_size = int(re.match(r'[^\d]*(\d*)', image_path).group(1))
 
     data_block = DataBlock(
-        get_items=get_image_files,
-        get_y=get_y_neg if is_neg else parent_label,
+        get_items=get_items,
+        get_y=functools.partial(get_y_neg, neg_cls) if is_neg else parent_label,
         blocks=(ImageBlock, CategoryBlock),
         splitter=(
             GrandparentSplitter(valid_name=('test' if test_only else 'valid'))
@@ -112,19 +119,19 @@ for i in range(9):
     TIMM_SHORT_TO_LONG[f"effnet{i}"] = f"efficientnet_b{i}"
 
 
-def _create_timm_body(arch: str) -> nn.Module:
+def _create_timm_body(arch: str, pretrained: bool) -> nn.Module:
     "Creates a body from any model in the `timm` library."
-    model = timm.create_model(TIMM_SHORT_TO_LONG[arch], pretrained=True, num_classes=0, global_pool='')
+    model = timm.create_model(TIMM_SHORT_TO_LONG.get(arch, arch), pretrained=pretrained, num_classes=0, global_pool='')
     ll = list(enumerate(model.children()))
     cut = next(i for i,o in reversed(ll) if has_pool_type(o))
     return nn.Sequential(*list(model.children())[:cut])
 
 
-def _get_body(arch: Union[Callable, str]) -> nn.Module:
+def _get_body(arch: Union[Callable, str], pretrained: bool = True) -> nn.Module:
     if isinstance(arch, Callable):
-        return create_body(arch, cut=ARCH_CUT[arch])
+        return create_body(arch, cut=ARCH_CUT[arch], pretrained=pretrained)
     assert isinstance(arch, str)
-    return _create_timm_body(arch=arch)
+    return _create_timm_body(arch=arch, pretrained=pretrained)
 
 
 def _get_model(body: nn.Module, is_neg: bool, head_dropout: float = 0.) -> nn.Module:
@@ -132,8 +139,8 @@ def _get_model(body: nn.Module, is_neg: bool, head_dropout: float = 0.) -> nn.Mo
     return nn.Sequential(body, head)
 
 
-def get_model(arch: Union[Callable, str], is_neg: bool, head_dropout: float = 0.) -> nn.Module:
-    body = _get_body(arch=arch)
+def get_model(arch: Union[Callable, str], is_neg: bool, head_dropout: float = 0., pretrained: bool = True) -> nn.Module:
+    body = _get_body(arch=arch, pretrained=pretrained)
     return _get_model(body=body, is_neg=is_neg, head_dropout=head_dropout)
 
 
@@ -163,13 +170,23 @@ def _load_model(model_name: str, is_neg: bool) -> nn.Module:
     """
     Loads the model, after attaching the appropriate head
     """
+
+    # Sometimes the model name is formatted like resnet18_s224
+    # We want to strip that end part
+    match = re.match(r'(.*)_s\d*$', model_name)
+    if match:
+        model_name = match[1]
+
     path = _get_model_path(model_name=model_name)
     with open(path, 'rb') as f:
         body = pickle.load(f)
     return _get_model(body=body, is_neg=is_neg)
 
 
-def model_size(m: nn.Module) -> None:
+def model_size(m: Union[nn.Module, Callable, str]) -> None:
+    if not isinstance(m, nn.Module):
+        m = timm.create_model(m, pretrained=False, num_classes=0, global_pool='')
+
     # Prints number of params, in millions
     ret = 0
     for p in m.parameters():
@@ -315,6 +332,7 @@ def predict_and_save(
             learn.dls = dls
 
     df_acc = None
+    df_all = []
 
     for learn in learns:
         idx = 0 if sname == 'train' else 1
@@ -338,12 +356,21 @@ def predict_and_save(
             Path(save_dir).mkdir(parents=True)
 
         df_acc = df if df_acc is None else df + df_acc
+        df_all.append(df)
 
     df = df_acc / len(learns)
     # df = df[const.VOCAB_NEG if is_neg else const.VOCAB_SHORT]  # Put columns in the right order
     df.to_csv(str(save_dir/sname) + ".csv")
+    with open(save_dir/f"{sname}_all", "wb") as f:
+        pickle.dump(df_all, f)
 
     return preds, targs
+
+
+def make_all_dummy(p: Union[str, Path]) -> None:
+    df = pd.read_csv(p, index_col=0)
+    with open(str(p).replace(".csv", "_all"), "wb") as f:
+        pickle.dump([df] * 5, f)
 
 
 def predict_and_save_folds(
