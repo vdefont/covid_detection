@@ -1,6 +1,6 @@
 from pathlib import Path
 import shutil
-from typing import Tuple, List, Dict, Optional, Set, Iterable
+from typing import Tuple, List, Dict, Optional, Set, Iterable, Any, NamedTuple
 import pandas as pd
 from pandas import DataFrame
 from sklearn.model_selection import train_test_split
@@ -9,71 +9,55 @@ from collections import defaultdict
 import numpy as np
 import itertools
 import pickle
+from PIL import Image, ImageDraw
+import json
+from multiprocessing import Pool
 
 import const
+import utils
 
 
-def _setup_data() -> DataFrame:
-    img_data = pd.read_csv(const.DIR_ORIGINAL_DATA + "train_image_level.csv")
-    img_data = img_data.rename(columns={'id': 'img_id', 'StudyInstanceUID': 'study_id'})
-    img_data.img_id = img_data.img_id.str[:-len("_image")]
-
-    # Remove dups
-    with open("data_original/dups", "rb") as f:
-        dups = pickle.load(f)
-    img_data = img_data[~img_data.img_id.isin(dups)]
+# MAKING MASKS #
 
 
-    study_data = pd.read_csv(const.DIR_ORIGINAL_DATA + "train_study_level.csv")
-    study_data = study_data.rename(columns={'id': 'study_id'})
-    study_data.study_id = study_data.study_id.str[:-len("_study")]
-    study_data.columns = ["study_id"] + const.VOCAB_SHORT
-
-    data = img_data.merge(study_data, on='study_id')[['img_id', 'study_id']+const.VOCAB_SHORT]
-
-    # Add labels
-    d = data[const.VOCAB_SHORT].stack().reset_index()
-    data['label'] = d[d[0] == 1]['level_1'].tolist()
-    return data
+class MakeMaskArgs(NamedTuple):
+    base_dir: Path
+    row: Any
+    size: int
+    extn: str
 
 
-def get_folds(
-        data: Optional[DataFrame] = None,
-        num_folds: int = 5,
-        boxes: bool = False,
-        seed: int = 42,
-) -> List[Set[str]]:
+def _make_mask(args: MakeMaskArgs) -> None:
+    row = args.row
+    mask = Image.new('L', size=(row.width, row.height))
+    if isinstance(row.boxes, str):
+        for box in json.loads(row.boxes):
+            draw = ImageDraw.Draw(mask)
+            x1 = box["x"]
+            y1 = box["y"]
+            x2 = box["x"] + box["width"]
+            y2 = box["y"] + box["height"]
+            draw.rectangle([(x1, y1), (x2, y2)], fill="#ffffff")
+
+    mask = utils.resize(array=np.array(mask), size=args.size)
+    mask.save(args.base_dir / f"{row.id}.{args.extn}")
+
+
+def make_masks(size: int = 256, extn: str = "png") -> None:
     """
-    Strategy:
-    - Group images by study_id, and bucket these groups by label
-        (so we have four buckets, each containing many groups)
-    - Split up the groups so that the five folds have about an
-     equal number of individual samples
-
-    If boxes is True, we only consider images where there are boxes
+    Run this once to create jpg/png images of the masks
+    Takes 2 minutes to run
     """
-    data = _setup_data() if data is None else data
+    base_dir = Path(const.subdir_data_class(path=True) / 'masks')
+    base_dir.mkdir()
 
-    if boxes is True:
-        image_data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
-        ids_with_boxes = image_data.id[~image_data.boxes.isna()]
-        data = data[data.img_id.isin(ids_with_boxes)]
+    data = pd.read_csv(const.subdir_data_csv(path=True) / "train_image_level_prep.csv")
+    args = [MakeMaskArgs(base_dir=base_dir, row=row, size=size, extn=extn) for _i, row in data.iterrows()]
+    pool = Pool(processes=5)
+    pool.map(_make_mask, args)
 
-    random.seed(seed)
-    lab_to_gps = defaultdict(list)
-    for name, group in data.groupby(['label', 'study_id']):
-        lab_to_gps[name[0]].append(group)
 
-    fold_gps = [[] for _ in range(num_folds)]
-    for gps in lab_to_gps.values():
-        random.shuffle(gps)
-        cumsum = np.cumsum([len(gp) for gp in gps])
-        cum_frac = cumsum / cumsum[-1] - 0.000001 # So the last one is not in next bucket
-        fold_i_ls = (cum_frac * num_folds).astype(int)
-        for fold_i, gp in zip(fold_i_ls, gps):
-            fold_gps[fold_i].append(gp)
-
-    return [set(pd.concat(gps).img_id) for gps in fold_gps]
+# MAIN STUFF #
 
 
 def get_tr_vl(data: Optional[DataFrame] = None, valid_amt: float = 0.3) -> Tuple[Set[str], Set[str]]:
@@ -83,7 +67,7 @@ def get_tr_vl(data: Optional[DataFrame] = None, valid_amt: float = 0.3) -> Tuple
     - For each label bucket, split up the gps so that train+val
       have about an equal number of individual samples
     """
-    data = data or _setup_data()
+    data = data or utils.setup_data()
 
     random.seed(42)
     lab_to_gps = defaultdict(list)
@@ -147,14 +131,14 @@ def populate_dirs(data: DataFrame, X_tr: Iterable[str], X_ts: Iterable[str], src
 
 
 def create_data(src: Path, extn: str, dst: Path, valid_amt: float) -> None:
-    data = _setup_data()
+    data = utils.setup_data()
     X_tr, X_ts = get_tr_vl(data=data, valid_amt=valid_amt)
     populate_dirs(data=data, X_tr=X_tr, X_ts=X_ts, src=src, extn=extn, dst=dst)
 
 
 def create_data_folds(src: Path, extn: str, dst: Path, num_folds: int) -> None:
-    data = _setup_data()
-    folds = get_folds(data=data, num_folds=num_folds)
+    data = utils.setup_data()
+    folds = utils.get_folds(data=data, num_folds=num_folds)
     populate_dirs_folds(data=data, folds=folds, src=src, extn=extn, dst=dst)
 
 

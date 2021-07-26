@@ -8,7 +8,7 @@ import shutil
 import pickle
 
 import const
-import make_data_class
+import utils
 
 
 class Frame(NamedTuple):
@@ -409,7 +409,7 @@ def create_box_data_folds(frame_new: Frame, src: str, dst: str, extn: str, num_f
     Reads from data_image/
     Writes to data_detect/
     """
-    folds = make_data_class.get_folds(num_folds=num_folds, boxes=True)
+    folds = utils.get_folds(num_folds=num_folds, boxes=True)
     id_to_fold = {id: i for i, ids in enumerate(folds) for id in ids}
 
     src_dir = const.subdir_data_image(path=True) / src

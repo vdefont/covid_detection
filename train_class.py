@@ -3,18 +3,48 @@ import albumentations
 import pickle
 import torch
 from torch import Tensor
-from typing import Iterable, Optional, List, Dict, Callable, Tuple, Any, Union
+from typing import Iterable, Optional, List, Dict, Callable, Tuple, Any, Union, NamedTuple
 from pathlib import Path
 import tqdm
 from PIL import Image
 import timm
 import re
 import functools
+from PIL import Image
+import random
+from multiprocessing import Pool
 
 import const
 
 
 # DATA #
+
+
+class GetMaskArgs(NamedTuple):
+    p: Path
+    size: int
+
+
+def _get_mask(args: GetMaskArgs) -> List[float]:
+    im = Image.open(args.p)
+    im = im.resize((args.size, args.size), Image.LANCZOS)
+    return (np.array(im) / 255).flatten().tolist()
+
+
+def get_masks(size: int) -> Dict[str, List[float]]:
+    """
+    Run this when training, to resize the masks to the expected size at that layer
+    Arrays hold values between 0 and 1
+    """
+    ret: Dict[str, np.ndarray] = {}
+    args = [
+        GetMaskArgs(p=p, size=size) for p in Path(const.subdir_data_class(path=True) / 'masks').glob('*')
+        if str(p).endswith("jpg") or str(p).endswith("png")
+    ]
+    ids = [args_i.p.name[:-len(".jpg")] for args_i in args]
+    pool = Pool(processes=5)
+    masks = pool.map(_get_mask, args)
+    return dict(zip(ids, masks))
 
 
 def get_y_neg(neg_cls: const.Vocab, path: Path) -> str:
@@ -94,6 +124,89 @@ def get_dls(
     )
 
     return data_block.dataloaders(const.subdir_data_class(path=True) / image_path, bs=batch_size)
+
+
+@Transform
+def make_img(path):
+    return np.array(PILImage.create(path)).transpose((2, 0, 1))
+
+
+class Cutout(Transform):
+    def __init__(self, orig_size: int, cutout_prob: float = 0.7, cutout_frac: float = 0.3):
+        self.orig_size = orig_size
+        self.cutout_prob = cutout_prob
+        self.cutout_frac = cutout_frac
+
+    def encodes(self, x):
+        im = np.array(x)
+        if len(im.shape) != 3:
+            return im
+
+        # Only do cutout 70% of the time
+        if random.random() > self.cutout_prob:
+            return im
+
+        def _get_start_end():
+            center = random.random() * self.orig_size
+            cutout_width = self.cutout_frac * self.orig_size
+            start = center - cutout_width / 2
+            end = center + cutout_width / 2
+            return int(max(start, 0)), int(min(end, self.orig_size))
+
+        x_start, x_end = _get_start_end()
+        y_start, y_end = _get_start_end()
+
+        im[:, x_start:x_end, y_start:y_end] = 0
+
+        return im
+
+
+@Transform
+def maybe_make_tensor(im):
+    if len(im.shape) == 3:
+        return TensorImage(im)
+    return im
+
+
+class GetMask(Transform):
+    def __init__(self, mask_size: int):
+        self.masks = get_masks(size=mask_size)
+
+    def encodes(self, x):  # x is a path
+        return self.masks[x.name[:-len(".png")]]
+
+
+def get_dls_mask(
+        image_path: str,
+        img_size: int,
+        is_neg: bool,
+        mask_size: int,
+        neg_cls: const.Vocab = const.Vocab.NEG,
+        fold_valid: Optional[int] = None,
+        test_only: bool = False,
+        batch_size: int = 32,
+) -> DataLoaders:
+    orig_img_size = int(re.match(r'[^\d]*(\d*)', image_path).group(1))
+
+    tfms = [
+        [make_img], [parent_label, Categorize], [GetMask(mask_size=mask_size)]
+    ]
+    files = get_image_files(image_path)
+    splits = FoldSplitter(fold_valid=0)(files)
+    dsets = Datasets(files, tfms, splits=splits)
+    item_tfms=[
+        Resize(img_size),
+        Cutout(orig_size=orig_img_size),
+        maybe_make_tensor,
+    ]
+    batch_tfms=[
+        IntToFloatTensor,
+        Brightness(max_lighting=0.05, p=0.75),
+        Contrast(max_lighting=0.2, p=0.75),
+        *aug_transforms(size=img_size, max_rotate=3, max_warp=0, max_lighting=0, max_zoom=1.0),
+        Normalize.from_stats(*const.MEAN_STD_STATS),
+    ]
+    return dsets.dataloaders(after_item=item_tfms, after_batch=batch_tfms)
 
 
 # MODEL #

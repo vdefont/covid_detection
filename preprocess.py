@@ -15,6 +15,7 @@ from tqdm.auto import tqdm
 import random
 
 import const
+import utils
 
 
 # MAKE IMAGES #
@@ -67,29 +68,6 @@ def show_dcm(name: str) -> None:
     img.show()
 
 
-def _make_square(im: np.array) -> np.ndarray:
-    """
-    Pads the left/right or top/bottom of the image with black, so that
-    it is a square
-    """
-    dim = max(im.shape)
-    ret = np.zeros((dim, dim)).astype(np.uint8)
-    y_start = (dim - im.shape[0]) // 2
-    x_start = (dim - im.shape[1]) // 2
-    ret[y_start: y_start + im.shape[0], x_start: x_start + im.shape[1]] = im
-    return ret
-
-
-def resize(array, size, resample=Image.LANCZOS):
-    # Forked from: https://www.kaggle.com/xhlulu/vinbigdata-process-and-resize-to-image
-    array = _make_square(array)  # Ensures that resizing preserves the dimensions
-    im = Image.fromarray(array)
-
-    im = im.resize((size, size), resample)
-
-    return im
-
-
 class MakeImageArgs(NamedTuple):
     dirname: str
     file: str
@@ -105,7 +83,7 @@ def make_image(args: MakeImageArgs) -> Tuple[int]:
 
     # set keep_ratio=True to have original aspect ratio
     xray = read_xray(os.path.join(args.dirname, args.file))
-    im = resize(xray, size=args.size)
+    im = utils.resize(xray, size=args.size)
     im.save(args.save_dir / args.file.replace('dcm', args.extn))
 
     return xray.shape
